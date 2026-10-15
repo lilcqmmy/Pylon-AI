@@ -1,6 +1,14 @@
 # Data source evaluation: nflverse schedules/results
 
-Evaluated 2026-10-15. Scope: game-level history (schedules, final scores, context) for the Elo/win-probability
+Evaluated 2026-10-15. **Status: integrated** (`src/sfi/data/sources/nflverse.py`); owner confirmed
+non-commercial research use with CC-BY attribution and the season splits below on 2026-10-15.
+
+**Defect found during integration:** 101 night games in 2000–2005 have `gametime = "09:00"` instead of
+`"21:00"` (all Mon/Thu/Sat; one more is the neutral-site 2003 MIA–SD game). Left as is, their results
+would look known about 12 hours before kickoff. The adapter repairs exactly this pattern (season ≤ 2005
+and `09:00`) and lists every repair; real 09:30 London kickoffs (2014+) are untouched.
+
+Scope: game-level history (schedules, final scores, context) for the Elo/win-probability
 baseline. Player-level feeds (play-by-play, injuries, snaps) are noted but not evaluated in depth here.
 
 ## Recommendation

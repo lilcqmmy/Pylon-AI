@@ -1,8 +1,9 @@
 """Strictly forward-in-time backtest.
 
-For each (season, week), the as-of time is one hour before that week's earliest kickoff. A model is
-first fed only the results whose `result_known_at_utc` is <= that as-of time, then forecasts every
-game in the week. Results from the week itself or later can never reach the model before it forecasts.
+Games are grouped into slates by kickoff time. For each slate, the as-of time is `as_of_lead` before
+kickoff. A model is first fed only the results whose `result_known_at_utc` is <= that as-of time,
+then forecasts every game in the slate. So a Sunday-night forecast can use Sunday-afternoon results
+once they are known, but no result can reach the model before it was available.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ class Forecast:
 
 def quality_gate(model: WinModel, game: Game, cfg: GateConfig) -> QualityGate:
     reasons = []
-    for side, team in (("home", game.home_team), ("away", game.away_team)):
+    for side, team in (("home", game.home_key), ("away", game.away_key)):
         n = model.prior_games(team)
         if n < cfg.min_prior_games_per_team:
             reasons.append(f"sparse_data:{side}_team_has_{n}_games_this_season")
@@ -44,18 +45,19 @@ def iter_walkforward(
     games: list[Game], model: WinModel, *, gate: GateConfig = GateConfig(),
     as_of_lead: timedelta = timedelta(hours=1), with_inputs: bool = True,
 ) -> Iterator[Forecast]:
-    weeks: dict[tuple[int, int], list[Game]] = defaultdict(list)
+    slates: dict[datetime, list[Game]] = defaultdict(list)
     for g in games:
-        weeks[(g.season, g.week)].append(g)
+        slates[g.scheduled_start_utc].append(g)
     # Results in the order they became known; released only once known_at <= as_of.
     pending = sorted(
         (g for g in games if g.is_final and g.result_known_at_utc is not None),
         key=lambda g: (g.result_known_at_utc, g.scheduled_start_utc, g.game_id),
     )
     i = 0
-    for (season, week) in sorted(weeks):
-        slate = sorted(weeks[(season, week)], key=lambda g: (g.scheduled_start_utc, g.game_id))
-        as_of = slate[0].scheduled_start_utc - as_of_lead
+    for kickoff in sorted(slates):
+        slate = sorted(slates[kickoff], key=lambda g: g.game_id)
+        season = slate[0].season
+        as_of = kickoff - as_of_lead
         batch = []
         while i < len(pending) and pending[i].result_known_at_utc <= as_of:
             batch.append(pending[i])

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import timedelta
 
 import numpy as np
 import pytest
@@ -57,12 +58,12 @@ def test_platt_learns_only_from_issued_forecasts_of_known_results(small_world):
     cal = PlattCalibrated(EloModel(), min_samples=1, exclude_first_season=True)
     list(iter_walkforward(games, cal, with_inputs=False))
     first = min(g.season for g in games)
-    last_week = max((g.season, g.week) for g in games)
+    last_as_of = max(g.scheduled_start_utc for g in games) - timedelta(hours=1)
     expected = sum(
         1 for g in games
-        if g.season != first and g.home_outcome != 0.5 and (g.season, g.week) != last_week
+        if g.season != first and g.home_outcome != 0.5 and g.result_known_at_utc <= last_as_of
     )
-    assert cal.n_samples == expected  # final week's results are never known before a forecast
+    assert cal.n_samples == expected  # results known only after the last forecast are never learned
 
 
 def test_platt_shrinks_overconfident_forecasts():

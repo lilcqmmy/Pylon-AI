@@ -19,8 +19,8 @@ class _SeasonCounter:
         self.season = season
 
     def _count(self, game: Game) -> None:
-        self._season_games[game.home_team] += 1
-        self._season_games[game.away_team] += 1
+        self._season_games[game.home_key] += 1
+        self._season_games[game.away_key] += 1
 
     def prior_games(self, team: str) -> int:
         return self._season_games[team]
@@ -42,11 +42,12 @@ class CoinFlip(_SeasonCounter):
 
 
 class HomeRate(_SeasonCounter):
-    """Historical home win rate among non-tied games, with a Beta(1, 1) prior."""
+    """Historical home win rate among non-tied, non-neutral games, with a Beta(1, 1) prior.
+    Neutral-site games get 0.5."""
 
     name = "home_rate"
-    version = "0.1.0"
-    feature_spec_version = "home_rate_v1"
+    version = "0.2.0"
+    feature_spec_version = "home_rate_v2"
 
     def __init__(self) -> None:
         super().__init__()
@@ -55,11 +56,13 @@ class HomeRate(_SeasonCounter):
 
     def observe(self, game: Game) -> None:
         self._count(game)
-        if game.home_outcome != 0.5:
+        if game.home_outcome != 0.5 and not game.neutral_site:
             self.home_wins += int(game.home_outcome)
             self.decided += 1
 
     def predict_home_win(self, game: Game) -> float:
+        if game.neutral_site:
+            return 0.5
         return (self.home_wins + 1) / (self.decided + 2)
 
     def inputs_for(self, game: Game) -> dict[str, Any]:

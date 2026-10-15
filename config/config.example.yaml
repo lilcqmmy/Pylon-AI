@@ -1,20 +1,39 @@
 # Copy to config/config.yaml for local overrides (that file is git-ignored).
-# Values here are illustrative defaults for the SYNTHETIC baseline, not tuned or validated settings.
+# Values here are starting points, not validated settings.
 project:
   name: sports-forecasting-intelligence
   mode: research_no_money
   initial_league: NFL
 
-synthetic:
-  seed: 20261015
-  seasons: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
-  n_teams: 32
-  weeks_per_season: 17
+dataset: synthetic              # default for `tune`/`backtest`; override with --dataset
+
+# Season splits must be disjoint and ordered: burn-in < validation < holdout.
+# Burn-in warms up ratings (never scored); tuning is scored on validation only; holdout stays sealed
+# until `sfi backtest --reveal-holdout`, and every reveal is logged.
+datasets:
+  synthetic:
+    seed: 20261015
+    seasons: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
+    n_teams: 32
+    weeks_per_season: 17
+    splits:
+      burn_in: 2017
+      validation: 2018-2022
+      holdout: 2023-2024
+
+  nflverse:                     # real NFL; see docs/data_sources/nflverse_schedules.md
+    raw_dir: data/raw/nflverse/schedules
+    min_season: 2000            # 1999 has no kickoff times
+    known_at_hours: 5           # result treated as known this long after kickoff
+    splits:                     # fixed 2026-10-15 before any real-data results were viewed
+      burn_in: 2000
+      validation: 2001-2019
+      holdout: 2020-2025
 
 elo:                            # untuned defaults, reported as "elo_default"
   initial_rating: 1500.0
   k_factor: 20.0
-  home_field_elo: 48.0          # in Elo points
+  home_field_elo: 48.0          # in Elo points; not applied at neutral sites
   season_regression: 0.33       # fraction pulled back toward the mean between seasons
   margin_of_victory: true
 
@@ -25,7 +44,7 @@ tuning:                         # `sfi tune`: grid search scored ONLY on validat
     home_field_elo: [0, 25, 48, 75, 100]
     season_regression: [0.2, 0.33, 0.5, 0.67]
     margin_of_victory: [true, false]
-  artifact: artifacts/elo_tuned.json
+  artifact_dir: artifacts       # writes <dataset>_elo_tuned.json
 
 calibration:                    # Platt scaling refit walk-forward on past issued forecasts only
   method: platt
@@ -34,6 +53,7 @@ calibration:                    # Platt scaling refit walk-forward on past issue
 
 forecast:
   as_of_required: true
+  as_of_lead_hours: 1           # each kickoff slate is forecast this long before kickoff
   publish_gate:
     allow_abstention: true
     min_prior_games_per_team: 0   # 0 = gate off; choose a value only after an empirical study
@@ -41,16 +61,13 @@ forecast:
 
 validation:
   scheme: rolling_origin
-  # Seasons must be disjoint and in time order: burn-in < validation < holdout.
-  burn_in_seasons: [2017]                          # warms up ratings; never scored
-  validation_seasons: [2018, 2019, 2020, 2021, 2022]  # tuning objective is computed here only
-  holdout_seasons: [2023, 2024]                    # untouched by any tuning or design choice
   calibration_bins: 10
   bootstrap_samples: 2000
 
 storage:
   forecast_archive: archive/forecasts.jsonl          # future live (pre-game) forecasts
   backtest_archive: archive/backtest_forecasts.jsonl  # walk-forward replays
+  holdout_reveal_log: archive/holdout_reveals.jsonl
   immutable_forecasts: true
 
 model:

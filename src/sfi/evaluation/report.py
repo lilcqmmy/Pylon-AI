@@ -27,9 +27,13 @@ class ScoredSet:
 
 def score(
     records: list[ForecastRecord], games: dict[str, Game], seasons: set[int],
-    oracle: dict[str, float] | None = None,
+    benchmarks: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, ScoredSet]:
-    """Score records whose season is in `seasons`; everything else is ignored."""
+    """Score records whose season is in `seasons`; everything else is ignored.
+
+    `benchmarks` are reference probabilities that are not model forecasts (the synthetic oracle, the
+    betting market). Each is scored on the games it covers among those the models scored.
+    """
     sets: dict[str, ScoredSet] = {}
     for r in records:
         if r.season not in seasons:
@@ -45,15 +49,17 @@ def score(
             s.p.append(r.distribution["p_home_win"])
             s.y.append(g.home_outcome)
             s.block.append(f"{g.season}-W{g.week:02d}")
-    if oracle is not None and sets:
+    if benchmarks and sets:
         ref = max(sets.values(), key=lambda s: len(s.p))
-        o = ScoredSet(ORACLE, n_tie=ref.n_tie, n_abstain=ref.n_abstain)
-        for gid, y, b in zip(ref.game_ids, ref.y, ref.block):
-            o.game_ids.append(gid)
-            o.p.append(oracle[gid])
-            o.y.append(y)
-            o.block.append(b)
-        sets[ORACLE] = o
+        for name, probs in benchmarks.items():
+            o = ScoredSet(name, n_tie=ref.n_tie, n_abstain=ref.n_abstain)
+            for gid, y, b in zip(ref.game_ids, ref.y, ref.block):
+                if gid in probs:
+                    o.game_ids.append(gid)
+                    o.p.append(probs[gid])
+                    o.y.append(y)
+                    o.block.append(b)
+            sets[name] = o
     return sets
 
 
@@ -76,12 +82,21 @@ def summarize(sets: dict[str, ScoredSet], n_boot: int, seed: int = 0) -> dict[st
 
 
 def paired_brier_diff(sets: dict[str, ScoredSet], a: str, b: str, n_boot: int, seed: int = 0):
-    """Brier(a) - Brier(b) on the same games, CI by week-block bootstrap. Negative favors a."""
+    """Brier(a) - Brier(b) on the games both scored, CI by week-block bootstrap. Negative favors a.
+    Returns (mean, lo, hi, n_games)."""
     sa, sb = sets[a], sets[b]
-    if sa.game_ids != sb.game_ids:
-        raise ValueError("paired comparison requires identical scored games")
-    d = M.brier_terms(sa.p, sa.y) - M.brier_terms(sb.p, sb.y)
-    return M.block_bootstrap_mean_ci(d, sa.block, n_boot, seed=seed)
+    ib = {gid: i for i, gid in enumerate(sb.game_ids)}
+    pairs = [(i, ib[gid]) for i, gid in enumerate(sa.game_ids) if gid in ib]
+    if not pairs:
+        raise ValueError(f"{a} and {b} share no scored games")
+    ia, jb = zip(*pairs)
+    pa, ya = [sa.p[i] for i in ia], [sa.y[i] for i in ia]
+    pb, yb = [sb.p[j] for j in jb], [sb.y[j] for j in jb]
+    if ya != yb:
+        raise ValueError("outcomes differ for the same game")
+    d = M.brier_terms(pa, ya) - M.brier_terms(pb, yb)
+    m, lo, hi = M.block_bootstrap_mean_ci(d, [sa.block[i] for i in ia], n_boot, seed=seed)
+    return m, lo, hi, len(pairs)
 
 
 def section_lines(
@@ -102,14 +117,14 @@ def section_lines(
             f"| {name} | {s['n_scored']} | {s['brier']:.4f} | [{lo:.4f}, {hi:.4f}] | {s['log_loss']:.4f} | "
             f"{a_txt} | {sl_txt} | {s['accuracy_at_0.5']:.3f} | {s['n_tie']} | {s['n_abstain']} |")
 
-    lines += ["", "Paired Brier differences (week-block bootstrap; negative favors A):", "",
-              "| A − B | Mean diff | 95% CI | Reading |", "|---|---:|---|---|"]
+    lines += ["", "Paired Brier differences on games both scored (week-block bootstrap; negative favors A):", "",
+              "| A − B | Games | Mean diff | 95% CI | Reading |", "|---|---:|---:|---|---|"]
     for a, b in comparisons:
-        if a not in sets or b not in sets or not sets[a].p:
+        if a not in sets or b not in sets or not sets[a].p or not sets[b].p:
             continue
-        m, lo, hi = paired_brier_diff(sets, a, b, n_boot)
+        m, lo, hi, n = paired_brier_diff(sets, a, b, n_boot)
         reading = "A better" if hi < 0 else "B better" if lo > 0 else "no clear difference"
-        lines.append(f"| {a} − {b} | {m:+.4f} | [{lo:+.4f}, {hi:+.4f}] | {reading} |")
+        lines.append(f"| {a} − {b} | {n} | {m:+.4f} | [{lo:+.4f}, {hi:+.4f}] | {reading} |")
 
     for model in reliability:
         if model not in sets or not sets[model].p:
@@ -122,20 +137,34 @@ def section_lines(
     return lines + [""]
 
 
+BENCHMARK_NOTES = {
+    ORACLE: f"`{ORACLE}` uses the generator's hidden true probabilities: the best any model could do on "
+            "this synthetic data, and **not available for real data**.",
+    "market_moneyline": "`market_moneyline` is the betting market's implied probability (moneylines with "
+                        "the bookmaker margin removed). It is a **benchmark only**, never a model input; "
+                        "the time the line was recorded is undocumented (likely near kickoff), so it may "
+                        "contain information our forecasts could not have had. Covered games only.",
+}
+
+
 def write_markdown(
     path: str | Path, *, title: str, data_kind: str, header: list[str], sections: list[list[str]],
+    benchmarks: list[str] = (),
 ) -> None:
     lines = [f"# {title}", ""]
     if data_kind == "synthetic":
         lines += ["> **SYNTHETIC DATA — NOT REAL NFL RESULTS.** Teams, games and scores are generated",
                   "> by `sfi.data.synthetic`. These numbers test the pipeline; they say nothing about",
                   "> real-world forecasting skill.", ""]
+    else:
+        lines += ["> **Real NFL results, retrospective backtest.** Forecasts are replayed from historical",
+                  "> data under a known-at policy, not made live before the games.", ""]
     lines += [f"- {h}" for h in header]
-    lines += ["", "Calibration slope/intercept are n/a for near-constant forecasts (not identifiable). "
-              "A slope below 1 means forecasts are too extreme; above 1, too timid. "
-              f"`{ORACLE}` uses the generator's hidden true probabilities: the best any model could do "
-              "on this synthetic data, and **not available for real data**. Reliability bins with few "
-              "games are noisy.", ""]
+    notes = ["Calibration slope/intercept are n/a for near-constant forecasts (not identifiable). "
+             "A slope below 1 means forecasts are too extreme; above 1, too timid. Reliability bins "
+             "with few games are noisy."]
+    notes += [BENCHMARK_NOTES[b] for b in benchmarks if b in BENCHMARK_NOTES]
+    lines += [""] + [n + "\n" for n in notes]
     for s in sections:
         lines += s
     Path(path).parent.mkdir(parents=True, exist_ok=True)

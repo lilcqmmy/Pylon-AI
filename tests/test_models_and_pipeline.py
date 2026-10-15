@@ -58,7 +58,7 @@ def test_end_to_end_elo_beats_coin_flip_and_trails_oracle():
     recs = run_walkforward(games, [EloModel, HomeRate, CoinFlip],
                            source_snapshot_id="t", data_kind="synthetic")
     oracle = {t.game_id: t.p_home_win_given_no_tie for t in truth}
-    sets = score(recs, {g.game_id: g for g in games}, {2022, 2023, 2024}, oracle=oracle)
+    sets = score(recs, {g.game_id: g for g in games}, {2022, 2023, 2024}, benchmarks={ORACLE: oracle})
     s = summarize(sets, n_boot=200)
     assert s["coin_flip"]["brier"] == pytest.approx(0.25)
     assert s[ORACLE]["brier"] < s["baseline_elo"]["brier"] < s["coin_flip"]["brier"]

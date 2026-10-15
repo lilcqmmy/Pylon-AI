@@ -24,6 +24,21 @@ class Game:
     away_score: int | None
     result_known_at_utc: datetime | None  # when the final result became available to us
     source_name: str
+    game_type: str = "REG"  # REG, or a playoff round (WC, DIV, CON, SB)
+    neutral_site: bool = False
+    home_franchise: str | None = None  # stable across relocations (e.g. OAK and LV -> LV)
+    away_franchise: str | None = None
+    source_record_id: str | None = None
+    known_at_policy: str | None = None  # how result_known_at_utc was derived
+
+    @property
+    def home_key(self) -> str:
+        """Identity a rating should follow: the franchise if known, else the team code."""
+        return self.home_franchise or self.home_team
+
+    @property
+    def away_key(self) -> str:
+        return self.away_franchise or self.away_team
 
     @property
     def is_final(self) -> bool:
@@ -63,7 +78,7 @@ def validate_games(games: list[Game]) -> None:
         problems.append(f"duplicate game_id: {dup_ids[:5]}")
     slots = Counter()
     for g in games:
-        if g.home_team == g.away_team:
+        if g.home_team == g.away_team or g.home_key == g.away_key:
             problems.append(f"{g.game_id}: team plays itself")
         if g.scheduled_start_utc.tzinfo is None:
             problems.append(f"{g.game_id}: naive scheduled_start_utc")
@@ -100,6 +115,28 @@ def _parse_int(s: str) -> int | None:
     return None if s == "" else int(s)
 
 
+def _parse_opt_str(s: str) -> str | None:
+    return None if s == "" else s
+
+
+_DT_FIELDS = {"scheduled_start_utc", "result_known_at_utc"}
+_PARSERS = {
+    "season": int, "week": int, "home_score": _parse_int, "away_score": _parse_int,
+    "scheduled_start_utc": _parse_dt, "result_known_at_utc": _parse_dt,
+    "neutral_site": lambda s: s == "1",
+    "home_franchise": _parse_opt_str, "away_franchise": _parse_opt_str,
+    "source_record_id": _parse_opt_str, "known_at_policy": _parse_opt_str,
+}
+
+
+def _fmt(name: str, value) -> str:
+    if name in _DT_FIELDS:
+        return _fmt_dt(value)
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return "" if value is None else str(value)
+
+
 def write_games_csv(games: list[Game], path: str | Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,26 +144,15 @@ def write_games_csv(games: list[Game], path: str | Path) -> None:
         w = csv.writer(fh, lineterminator="\n")
         w.writerow(_FIELDS)
         for g in games:
-            w.writerow([
-                g.league, g.season, g.week, g.game_id, g.home_team, g.away_team,
-                _fmt_dt(g.scheduled_start_utc),
-                "" if g.home_score is None else g.home_score,
-                "" if g.away_score is None else g.away_score,
-                _fmt_dt(g.result_known_at_utc), g.source_name,
-            ])
+            w.writerow([_fmt(f, getattr(g, f)) for f in _FIELDS])
 
 
 def read_games_csv(path: str | Path) -> list[Game]:
+    """Columns added after a file was written fall back to the Game defaults."""
     with open(path, newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     games = [
-        Game(
-            league=r["league"], season=int(r["season"]), week=int(r["week"]), game_id=r["game_id"],
-            home_team=r["home_team"], away_team=r["away_team"],
-            scheduled_start_utc=_parse_dt(r["scheduled_start_utc"]),
-            home_score=_parse_int(r["home_score"]), away_score=_parse_int(r["away_score"]),
-            result_known_at_utc=_parse_dt(r["result_known_at_utc"]), source_name=r["source_name"],
-        )
+        Game(**{k: _PARSERS.get(k, str)(v) for k, v in r.items() if k in _FIELDS})
         for r in rows
     ]
     validate_games(games)
