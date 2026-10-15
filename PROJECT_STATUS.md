@@ -52,25 +52,35 @@ Process note: the holdout numbers were viewed once before the K grid was extende
 That change was triggered by the best K sitting at the grid edge on validation; it moved holdout Brier
 by 0.0003.
 
+### Real data source evaluated (not yet integrated)
+- See `docs/data_sources/nflverse_schedules.md`. Recommended: nflverse `schedules/games.csv`
+  (CC-BY 4.0, attribution required), seasons 2000+. Sports Reference data ruled out by its terms.
+- One snapshot downloaded for inspection (2026-10-15, SHA-256 `cf5b5f6b…`, git-ignored under `data/raw/`):
+  7,548 games 1999–2026, consistency checks passed; 2026 has 79/272 games played.
+- No per-row known-at timestamps upstream → policy `result_known_at = kickoff + 5h`; betting lines and
+  weather are benchmark/diagnostic only.
+
 ### Not built / not verified
-- No real NFL data, data licenses, providers or credentials.
+- No real-data adapter yet; no model has been run on real NFL data.
 - No score/margin/total or player-stat distributions (Stage 2).
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
 - Local git repository only (branch `main`); no remote, no CI.
 
 ### Open decisions (owner)
-- Real data source and its license (candidate to evaluate: nflverse open data; verify terms before use).
+- Confirm nflverse use (non-commercial research, CC-BY attribution, no raw-file redistribution).
+- Real-data splits, fixed before viewing results: proposed burn-in 2000, validation 2001–2019, holdout 2020–2025.
+- Start prospective 2026 forecasts once the adapter works?
 - Run environment (local Windows PC assumed for now), budget.
 - First real target after win probability: margins/totals or a specific player stat?
 - Abstention thresholds: to be set from empirical studies, not guessed.
 
 ### Next steps
-1. Add score-margin and total distributions with interval-coverage tests.
-2. Pick and license-check a real historical data source; write its adapter with `known_at` timestamps.
-   Real data matters more than further synthetic tuning: these synthetic results only show the
-   machinery works.
+1. Build the nflverse adapter per the plan (fetch + manifest, normalize, neutral site, franchise
+   mapping, per-slate as-of, tzdata), then run tuning/backtest on real data with the agreed splits.
+2. Add score-margin and total distributions with interval-coverage tests.
 3. Optional: add a remote (e.g. private GitHub repo) and CI running pytest.
 
 ## History
 - 2026-10-15 `de593b9`: Stage 0/1 skeleton; untuned Elo on seasons 2021–2024.
-- 2026-10-15: Elo tuning on validation seasons, untouched holdout, walk-forward Platt recalibration.
+- 2026-10-15 `e797848`: Elo tuning on validation seasons, untouched holdout, walk-forward Platt recalibration.
+- 2026-10-15: nflverse schedules evaluated (license, coverage, known-at); adapter planned.
