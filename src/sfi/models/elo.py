@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from sfi.data.schema import Game
@@ -18,14 +20,25 @@ class EloParams:
     season_regression: float = 0.33
     margin_of_victory: bool = True
 
+    def __post_init__(self) -> None:
+        # Normalize types so YAML's 20 and 20.0 give the same fingerprint.
+        for f in ("initial_rating", "k_factor", "home_field_elo", "season_regression"):
+            object.__setattr__(self, f, float(getattr(self, f)))
+        object.__setattr__(self, "margin_of_victory", bool(self.margin_of_victory))
+
+    def fingerprint(self) -> str:
+        blob = json.dumps(asdict(self), sort_keys=True).encode()
+        return hashlib.sha256(blob).hexdigest()[:8]
+
 
 class EloModel:
-    name = "baseline_elo"
-    version = "0.1.0"
     feature_spec_version = "elo_v1"
 
-    def __init__(self, params: EloParams | None = None):
+    def __init__(self, params: EloParams | None = None, name: str = "baseline_elo"):
         self.p = params or EloParams()
+        self.name = name
+        # Different parameters are a different model: encode them in the version.
+        self.version = f"0.2.0+{self.p.fingerprint()}"
         self.ratings: dict[str, float] = defaultdict(lambda: self.p.initial_rating)
         self._season_games: dict[str, int] = defaultdict(int)
         self.season: int | None = None
@@ -72,7 +85,7 @@ class EloModel:
         return {
             "home_elo": round(self.ratings[game.home_team], 3),
             "away_elo": round(self.ratings[game.away_team], 3),
-            "home_field_elo": self.p.home_field_elo,
+            "params": asdict(self.p),
             "home_prior_games_season": self.prior_games(game.home_team),
             "away_prior_games_season": self.prior_games(game.away_team),
         }

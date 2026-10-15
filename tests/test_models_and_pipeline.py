@@ -20,6 +20,11 @@ def test_elo_equal_teams_favor_home_and_updates_are_zero_sum():
     assert m.ratings["A"] + m.ratings["B"] == pytest.approx(total)
 
 
+def test_elo_version_identifies_parameters():
+    assert EloModel(EloParams(k_factor=20)).version == EloModel(EloParams(k_factor=20.0)).version
+    assert EloModel(EloParams(k_factor=20)).version != EloModel(EloParams(k_factor=25)).version
+
+
 def test_elo_season_regression_pulls_toward_mean():
     m = EloModel(EloParams(season_regression=0.5))
     m.start_season(2023)
@@ -53,7 +58,7 @@ def test_end_to_end_elo_beats_coin_flip_and_trails_oracle():
     recs = run_walkforward(games, [EloModel, HomeRate, CoinFlip],
                            source_snapshot_id="t", data_kind="synthetic")
     oracle = {t.game_id: t.p_home_win_given_no_tie for t in truth}
-    sets = score(recs, {g.game_id: g for g in games}, {2021}, oracle=oracle)
+    sets = score(recs, {g.game_id: g for g in games}, {2022, 2023, 2024}, oracle=oracle)
     s = summarize(sets, n_boot=200)
     assert s["coin_flip"]["brier"] == pytest.approx(0.25)
     assert s[ORACLE]["brier"] < s["baseline_elo"]["brier"] < s["coin_flip"]["brier"]

@@ -14,3 +14,4 @@ config/config.yaml
 data/synthetic/
 archive/
 reports/
+artifacts/

@@ -13,6 +13,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\sfi.exe synth      # fictional seasons -> data/synthetic/
+.\.venv\Scripts\sfi.exe tune       # Elo grid search on validation seasons -> artifacts/elo_tuned.json
 .\.venv\Scripts\sfi.exe backtest   # walk-forward forecasts -> archive/, report -> reports/
 ```
 
@@ -28,11 +29,13 @@ src/sfi/
   models/base.py            WinModel interface (observe / predict / inputs)
   models/elo.py             Elo with home field, margin of victory, season regression
   models/baselines.py       Coin flip, historical home-win rate
+  models/calibration.py     Platt recalibration refit walk-forward on past issued forecasts
   forecasts/record.py       Hashed immutable forecast records, append-only JSONL archive
   evaluation/walkforward.py Week-by-week backtest + quality gate (abstention)
+  evaluation/tuning.py      Elo grid search; holdout seasons are dropped before it runs
   evaluation/metrics.py     Brier, log loss, reliability table, calibration slope, block bootstrap
   evaluation/report.py      Scoring + Markdown/JSON report
-  cli.py                    `sfi synth`, `sfi backtest`
+  cli.py                    `sfi synth`, `sfi tune`, `sfi backtest`
 tests/                      Leakage, metrics, archive immutability, schema, models, end-to-end
 ```
 
@@ -44,3 +47,6 @@ tests/                      Leakage, metrics, archive immutability, schema, mode
 - The archive never rewrites a forecast: identical re-runs are no-ops, changed content raises.
 - Every record carries `data_kind` and `simulation_only`; synthetic reports are labeled as such.
 - Ties are excluded from binary scoring and counted separately.
+- Seasons are split burn-in < validation < holdout (checked at startup). Tuning sees only data up
+  to the last validation season; `backtest` refuses a tuned artifact from a different data snapshot.
+- Model versions encode their parameters, and forecast IDs encode the data snapshot.

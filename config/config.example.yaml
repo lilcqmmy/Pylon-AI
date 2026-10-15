@@ -7,16 +7,30 @@ project:
 
 synthetic:
   seed: 20261015
-  seasons: [2021, 2022, 2023, 2024]
+  seasons: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
   n_teams: 32
   weeks_per_season: 17
 
-elo:
+elo:                            # untuned defaults, reported as "elo_default"
   initial_rating: 1500.0
   k_factor: 20.0
-  home_field_elo: 48.0          # in Elo points; tune only via walk-forward validation
+  home_field_elo: 48.0          # in Elo points
   season_regression: 0.33       # fraction pulled back toward the mean between seasons
   margin_of_victory: true
+
+tuning:                         # `sfi tune`: grid search scored ONLY on validation seasons
+  objective: brier
+  grid:
+    k_factor: [2, 4, 6, 8, 12, 16, 20, 25, 30]
+    home_field_elo: [0, 25, 48, 75, 100]
+    season_regression: [0.2, 0.33, 0.5, 0.67]
+    margin_of_victory: [true, false]
+  artifact: artifacts/elo_tuned.json
+
+calibration:                    # Platt scaling refit walk-forward on past issued forecasts only
+  method: platt
+  min_samples: 200              # identity mapping until this many past (non-tie) forecasts exist
+  exclude_first_season: true    # cold-start ratings are not representative
 
 forecast:
   as_of_required: true
@@ -27,7 +41,10 @@ forecast:
 
 validation:
   scheme: rolling_origin
-  burn_in_seasons: 1             # first season only warms up ratings; not scored
+  # Seasons must be disjoint and in time order: burn-in < validation < holdout.
+  burn_in_seasons: [2017]                          # warms up ratings; never scored
+  validation_seasons: [2018, 2019, 2020, 2021, 2022]  # tuning objective is computed here only
+  holdout_seasons: [2023, 2024]                    # untouched by any tuning or design choice
   calibration_bins: 10
   bootstrap_samples: 2000
 

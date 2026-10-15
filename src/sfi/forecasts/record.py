@@ -72,8 +72,9 @@ def make_record(
     if data_kind not in ("synthetic", "real"):
         raise ValueError("data_kind must be 'synthetic' or 'real'")
     stamp = as_of.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    snap = source_snapshot_id.split(":")[-1][:12]
     rec = ForecastRecord(
-        forecast_id=f"{model_name}-{model_version}-{game.game_id}-{stamp}",
+        forecast_id=f"{model_name}-{model_version}-{snap}-{game.game_id}-{stamp}",
         league=game.league, season=game.season, week=game.week, game_id=game.game_id,
         home_team=game.home_team, away_team=game.away_team,
         outcome_type="home_win_excl_tie",
