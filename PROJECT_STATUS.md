@@ -33,7 +33,7 @@ Parameters were **not** tuned; any tuning must use validation seasons only, with
 - No real NFL data, data licenses, providers or credentials.
 - No score/margin/total or player-stat distributions (Stage 2).
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
-- No git repository initialized yet.
+- Local git repository only (branch `main`, first commit `de593b9`); no remote, no CI.
 
 ### Open decisions (owner)
 - Real data source and its license (candidate to evaluate: nflverse open data; verify terms before use).
@@ -42,7 +42,7 @@ Parameters were **not** tuned; any tuning must use validation seasons only, with
 - Abstention thresholds: to be set from empirical studies, not guessed.
 
 ### Next steps
-1. Initialize git and commit this skeleton.
+1. Optional: add a remote (e.g. private GitHub repo) and CI running pytest.
 2. Tune Elo (K, home field, regression) on validation seasons; add a held-out season; add logistic recalibration.
 3. Add score-margin and total distributions with interval-coverage tests.
 4. Pick and license-check a real historical data source; write its adapter with `known_at` timestamps.
