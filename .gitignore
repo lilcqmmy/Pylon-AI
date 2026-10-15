@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local secrets / runtime config never committed
+.env
+config/config.yaml
+
+# Generated outputs (reproducible from code + seed)
+data/synthetic/
+archive/
+reports/

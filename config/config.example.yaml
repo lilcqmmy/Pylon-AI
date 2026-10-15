@@ -1,0 +1,43 @@
+# Copy to config/config.yaml for local overrides (that file is git-ignored).
+# Values here are illustrative defaults for the SYNTHETIC baseline, not tuned or validated settings.
+project:
+  name: sports-forecasting-intelligence
+  mode: research_no_money
+  initial_league: NFL
+
+synthetic:
+  seed: 20261015
+  seasons: [2021, 2022, 2023, 2024]
+  n_teams: 32
+  weeks_per_season: 17
+
+elo:
+  initial_rating: 1500.0
+  k_factor: 20.0
+  home_field_elo: 48.0          # in Elo points; tune only via walk-forward validation
+  season_regression: 0.33       # fraction pulled back toward the mean between seasons
+  margin_of_victory: true
+
+forecast:
+  as_of_required: true
+  publish_gate:
+    allow_abstention: true
+    min_prior_games_per_team: 0   # 0 = gate off; choose a value only after an empirical study
+    minimum_calibrated_probability: null
+
+validation:
+  scheme: rolling_origin
+  burn_in_seasons: 1             # first season only warms up ratings; not scored
+  calibration_bins: 10
+  bootstrap_samples: 2000
+
+storage:
+  forecast_archive: archive/forecasts.jsonl          # future live (pre-game) forecasts
+  backtest_archive: archive/backtest_forecasts.jsonl  # walk-forward replays
+  immutable_forecasts: true
+
+model:
+  llm_for_numeric_probability: false
+
+secrets:
+  guidance: environment_or_secret_manager_only
