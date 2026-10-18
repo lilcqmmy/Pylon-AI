@@ -83,6 +83,14 @@ def cmd_fetch(cfg: dict, args) -> int:
     state = "New snapshot" if created else "Unchanged since latest snapshot"
     print(f"{state}: {folder.relative_to(PROJECT_ROOT)}  ({manifest['bytes']} bytes, "
           f"sha256 {manifest['sha256'][:16]}, upstream updated {manifest['upstream_last_updated']})")
+    if args.pbp:
+        from sfi.data.sources import nflverse_pbp
+        from sfi.datasets import parse_seasons
+        pbp_root = PROJECT_ROOT / cfg["datasets"]["nflverse"]["pbp_dir"]
+        results = nflverse_pbp.fetch_pbp(pbp_root, sorted(parse_seasons(args.pbp)))
+        got = [s for s, _, created in results if created]
+        print(f"Play-by-play: downloaded {len(got)} season(s) {got if got else ''}; "
+              f"{len(results) - len(got)} unchanged.")
     print(manifest["attribution"])
     return 0
 
@@ -139,6 +147,29 @@ def cmd_backtest(cfg: dict, args) -> int:
 
     factories = [CoinFlip, HomeRate, lambda: EloModel(default, name="elo_default"),
                  *elo_factories(cfg, tuned_params)]
+    feature_note = None
+    if args.features == "pbp":
+        if ds.name != "nflverse":
+            print("--features pbp requires --dataset nflverse", file=sys.stderr)
+            return 1
+        from sfi.data.sources import nflverse_pbp
+        from sfi.features.pbp import load_team_games
+        from sfi.models.pbp_logit import PbpLogit
+        seasons = sorted({g.season for g in games})  # never beyond the last evaluated season
+        files = nflverse_pbp.latest_files(
+            PROJECT_ROOT / cfg["datasets"]["nflverse"]["pbp_dir"], seasons)
+        pbp_id = nflverse_pbp.combined_snapshot_id([m for _, m in files.values()])
+        stats = load_team_games(files, PROJECT_ROOT / "data" / "derived" / "pbp")
+        pf = cfg["features"]["pbp"]
+        factories += [
+            lambda: PbpLogit(tuned_params, stats, metrics=["epa_play"], l2=pf["l2"],
+                             min_samples=pf["min_samples"], name="pbp_logit_epa", data_tag=pbp_id),
+            lambda: PbpLogit(tuned_params, stats, l2=pf["l2"], min_samples=pf["min_samples"],
+                             name="pbp_logit_full", data_tag=pbp_id),
+        ]
+        feature_note = (f"Play-by-play features: seasons {seasons[0]}–{seasons[-1]}, snapshot `{pbp_id}`, "
+                        f"L2 {pf['l2']} (untuned), refit each season start, min {pf['min_samples']} samples. "
+                        f"{nflverse_pbp.EPA_CAVEAT}")
     records = run_walkforward(games, factories, source_snapshot_id=ds.snapshot_id,
                               data_kind=ds.data_kind, gate=gate, as_of_lead=lead)
     archive = ForecastArchive(PROJECT_ROOT / cfg["storage"]["backtest_archive"])
@@ -160,6 +191,10 @@ def cmd_backtest(cfg: dict, args) -> int:
     bench = list(ds.benchmarks)
     comparisons = [("elo_tuned", "elo_default"), ("elo_tuned_platt", "elo_tuned"), ("elo_tuned", "home_rate")]
     comparisons += [(m, b) for b in bench for m in ("elo_tuned", "elo_tuned_platt")]
+    if feature_note:
+        comparisons += [("pbp_logit_epa", "elo_tuned"), ("pbp_logit_full", "elo_tuned"),
+                        ("pbp_logit_full", "pbp_logit_epa")]
+        comparisons += [(m, b) for b in bench for m in ("pbp_logit_epa", "pbp_logit_full")]
     split_defs = [("validation", val, f"Validation seasons {min(val)}–{max(val)}",
                    "Elo parameters were **selected on these seasons**, so `elo_tuned` scores here are optimistic.")]
     if args.reveal_holdout:
@@ -172,7 +207,8 @@ def cmd_backtest(cfg: dict, args) -> int:
         results[key] = summary
         sections.append(section_lines(
             title, note, sets, summary, comparisons=comparisons,
-            reliability=["elo_tuned", "elo_tuned_platt"], n_boot=v["bootstrap_samples"], n_bins=v["calibration_bins"],
+            reliability=["elo_tuned", "pbp_logit_full"] if feature_note else ["elo_tuned", "elo_tuned_platt"],
+            n_boot=v["bootstrap_samples"], n_bins=v["calibration_bins"],
         ))
     if not args.reveal_holdout:
         sections.append([f"## Holdout seasons {min(hold)}–{max(hold)}", "",
@@ -181,7 +217,7 @@ def cmd_backtest(cfg: dict, args) -> int:
 
     reports = PROJECT_ROOT / "reports"
     reports.mkdir(exist_ok=True)
-    stem = f"{ds.name}_backtest"
+    stem = f"{ds.name}_pbp_backtest" if feature_note else f"{ds.name}_backtest"
     (reports / f"{stem}.json").write_text(json.dumps(
         {"dataset": ds.name, "data_kind": ds.data_kind, "snapshot_id": ds.snapshot_id,
          "splits": {"burn_in": sorted(ds.splits.burn_in), "validation": sorted(val), "holdout": sorted(hold)},
@@ -200,7 +236,10 @@ def cmd_backtest(cfg: dict, args) -> int:
                 f"(min {c['min_samples']} samples; first season excluded: {c['exclude_first_season']})",
                 "Outcome: P(home win); ties excluded from scoring and counted separately. "
                 "Includes regular season and playoffs.",
-                f"Each kickoff slate forecast {f['as_of_lead_hours']}h before kickoff using only results known by then."],
+                f"Each kickoff slate forecast {f['as_of_lead_hours']}h before kickoff using only results known by then.",
+                *([feature_note, "`pbp_logit_epa`: Elo logit + offense/defense EPA per play (4-game rolling and "
+                   "season-to-date, home minus away). `pbp_logit_full`: Elo logit + all 8 metrics × offense/defense "
+                   "× 2 windows (32 differences)."] if feature_note else [])],
         sections=sections,
     )
     for key, summary in results.items():
@@ -337,7 +376,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", help="path to YAML config (default: config/config.yaml or example)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("synth", help="generate fictional NFL-like seasons")
-    sub.add_parser("fetch", help="download a new nflverse schedules snapshot")
+    p = sub.add_parser("fetch", help="download a new nflverse schedules snapshot")
+    p.add_argument("--pbp", metavar="SEASONS", help='also fetch play-by-play, e.g. "2000-2026" or "2026"')
     p = sub.add_parser("forecast", help="forecast upcoming games and archive them (real data)")
     p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
     sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")
@@ -347,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "backtest":
             p.add_argument("--reveal-holdout", action="store_true",
                            help="also evaluate the sealed holdout seasons (logged)")
+            p.add_argument("--features", choices=["pbp"], help="also evaluate play-by-play feature models")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     if getattr(args, "dataset", None) is None and args.cmd in ("tune", "backtest"):

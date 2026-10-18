@@ -23,6 +23,10 @@ python -m venv .venv
 .\.venv\Scripts\sfi.exe tune --dataset nflverse        # Elo grid search on validation seasons
 .\.venv\Scripts\sfi.exe backtest --dataset nflverse    # validation report; holdout stays sealed
 
+# Play-by-play team features (experimental; not used live)
+.\.venv\Scripts\sfi.exe fetch --pbp 2000-2026          # ~480 MB first time; later only changed seasons
+.\.venv\Scripts\sfi.exe backtest --dataset nflverse --features pbp   # reports/nflverse_pbp_backtest.md
+
 # Synthetic test league
 .\.venv\Scripts\sfi.exe synth
 .\.venv\Scripts\sfi.exe tune --dataset synthetic
@@ -64,6 +68,9 @@ src/sfi/
   data/schema.py            Game record, validation, CSV I/O, known_results(as_of) point-in-time gate
   data/synthetic.py         Seeded fictional league + exact "truth" probabilities (evaluation only)
   data/sources/nflverse.py  Snapshot fetch + manifest, normalization, kickoff repair, timeline checks
+  data/sources/nflverse_pbp.py  Per-season play-by-play snapshots; skips unchanged upstream files
+  features/pbp.py           Team-game offense/defense aggregates; point-in-time rolling/season features
+  models/pbp_logit.py       Elo + play-by-play features, ridge logistic refit each season (walk-forward)
   models/base.py            WinModel interface (observe / predict / inputs)
   models/elo.py             Elo: home field (off at neutral sites), margin of victory, season regression,
                             ratings keyed by franchise

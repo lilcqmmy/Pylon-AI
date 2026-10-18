@@ -47,6 +47,31 @@ Splits fixed by the owner on 2026-10-15 before any real-data results were viewed
   games with moneylines (mostly 2006+). The market reflects injuries, QB changes and news that a
   results-only Elo can't see. Caveat: the line's timestamp is undocumented and probably near kickoff.
 
+### Play-by-play team features (2026-10-18; experimental, not used live)
+- Downloaded nflverse play-by-play 2000–2026 (27 parquet files, 459 MB, CC-BY 4.0; owner-approved),
+  checksummed per season; `sfi fetch --pbp` re-downloads only seasons that changed upstream.
+- Per team and game, offense and defense: EPA/play, success rate, pass EPA, rush EPA, explosive-play
+  rate (pass ≥ 20 yd, rush ≥ 10 yd), early-down pass rate, turnover rate, pressure rate (proxy: sack or
+  QB hit per dropback). Each as a 4-game rolling value (crossing seasons) and season-to-date (falling
+  back to last season early on), play-weighted, built only from games already released by the replay.
+- Models: ridge logistic regression on the Elo logit plus home-minus-away differences, refit at each
+  season start on past forecasts only (L2 = 10, fixed). `pbp_logit_epa` uses EPA/play only (4 diffs);
+  `pbp_logit_full` uses all 32. Holdout play-by-play (2020–2025) is not loaded by the backtest.
+- Caveat: nflverse EPA comes from a model trained on many seasons, so historical EPA has a small look-ahead.
+
+Validation 2001–2019 (5,055 games), paired Brier differences:
+
+| Comparison | Diff | 95% CI | Reading |
+|---|---:|---|---|
+| pbp_logit_epa − elo_tuned | −0.0004 | [−0.0015, +0.0007] | no clear difference |
+| pbp_logit_full − elo_tuned | +0.0017 | [−0.0006, +0.0039] | no clear difference |
+| pbp_logit_full − pbp_logit_epa | +0.0020 | [+0.0002, +0.0039] | EPA-only better |
+| pbp_logit_epa − market | +0.0063 | [+0.0034, +0.0094] | market better |
+
+**Conclusion:** team efficiency stats add no measurable skill over Elo, and the full feature set
+overfits (calibration slope 0.89). The market's edge most likely comes from information neither model
+has (injuries, QB changes, news). The feature models stay out of the live runs.
+
 ### Synthetic results (pipeline check only)
 Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449, default 0.2524, oracle
 0.2351. The holdout was viewed once before the K grid was widened (from the validation edge signal only).
@@ -88,8 +113,9 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Next steps
 1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
-2. Close the gap to the market with point-in-time features: QB starter changes and injury reports
-   (nflverse injuries have `date_modified`; needs its own known-at evaluation).
+2. Close the gap to the market with point-in-time player-availability features: QB starter changes
+   and injury reports (nflverse injuries have `date_modified`; needs its own known-at evaluation).
+   Team efficiency features alone did not help (see above).
 3. Score-margin and total distributions with interval-coverage tests.
 4. Optional: remote repository and CI running pytest.
 
@@ -99,3 +125,4 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-15 `a981217`: nflverse schedules evaluated (license, coverage, known-at); adapter planned.
 - 2026-10-15 `b11a2c5`: nflverse adapter built; first real-data validation results; holdout 2020–2025 sealed.
 - 2026-10-18: `sfi forecast` / `sfi score` for prospective forecasts with freshness gates and a ledger.
+- 2026-10-18: play-by-play team features evaluated on validation; no gain over Elo.

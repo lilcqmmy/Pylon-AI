@@ -23,6 +23,7 @@ datasets:
 
   nflverse:                     # real NFL; see docs/data_sources/nflverse_schedules.md
     raw_dir: data/raw/nflverse/schedules
+    pbp_dir: data/raw/nflverse/pbp
     min_season: 2000            # 1999 has no kickoff times
     known_at_hours: 5           # result treated as known this long after kickoff
     splits:                     # fixed 2026-10-15 before any real-data results were viewed
@@ -45,6 +46,11 @@ tuning:                         # `sfi tune`: grid search scored ONLY on validat
     season_regression: [0.2, 0.33, 0.5, 0.67]
     margin_of_victory: [true, false]
   artifact_dir: artifacts       # writes <dataset>_elo_tuned.json
+
+features:
+  pbp:                          # `sfi backtest --dataset nflverse --features pbp`
+    l2: 10.0                    # ridge penalty on standardized features; fixed, not tuned
+    min_samples: 200            # use Elo alone until this many past (non-tie) games are available
 
 calibration:                    # Platt scaling refit walk-forward on past issued forecasts only
   method: platt
