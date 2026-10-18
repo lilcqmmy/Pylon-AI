@@ -102,8 +102,7 @@ print("\n== 2025+ timestamped depth charts")
 for s in (2025, 2026):
     t = pq.read_table(latest("depth_charts", s), columns=["dt", "team", "pos_abb", "pos_rank", "gsis_id"]).to_pydict()
     dts = sorted(set(t["dt"]))
-    print(f"{s}: {len(dts)} distinct snapshots, first {dts[0]}, last {dts[-1]}; median gap "
-          f"{sorted((N_ := [(b > a) for a, b in zip(dts, dts[1:])]) and 0 for _ in [0])}")
+    print(f"{s}: {len(dts)} distinct snapshots, first {dts[0]}, last {dts[-1]}")
     from datetime import datetime, timezone
     times = [datetime.strptime(d, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) for d in dts]
     gaps = sorted((b - a).total_seconds() / 3600 for a, b in zip(times, times[1:]))
