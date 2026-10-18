@@ -44,6 +44,11 @@ refuses to run if the snapshot is over 24h old or any game is missing a result t
 `score` uses the latest forecast issued before each game's actual kickoff. Commit `ledger/` after each
 run so git holds an outside record of when forecasts were made.
 
+`scripts\live_run.ps1` runs one full cycle (fetch → forecast → score → commit `ledger/`) and logs to
+`logs\live_runs.log`. Two Claude desktop scheduled tasks run it: `nfl-live-forecast-weekday`
+(Mon and Thu 3:00 PM ET) and `nfl-live-forecast-sunday` (Sun 8:30 AM ET). They only run while the app
+is open; a missed run happens on the next launch.
+
 `--reveal-holdout` evaluates the holdout seasons and appends an entry to `archive/holdout_reveals.jsonl`.
 For real data, use it only once the model design is frozen.
 
