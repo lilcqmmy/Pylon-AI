@@ -90,6 +90,12 @@ def cmd_fetch(cfg: dict, args) -> int:
     from sfi.data.sources import nflverse_pbp
     from sfi.datasets import parse_seasons
     nv = cfg["datasets"]["nflverse"]
+    if args.live:  # current season's play-by-play and injuries, for live player forecasts
+        import csv as _csv
+        with open(folder / "games.csv", newline="", encoding="utf-8") as fh:
+            current = str(max(int(r["season"]) for r in _csv.DictReader(fh)))
+        args.pbp = args.pbp or current
+        args.injuries = args.injuries or current
     for spec, seasons_arg, dir_key in ((nflverse_pbp.PBP, args.pbp, "pbp_dir"),
                                        (nflverse_pbp.INJURIES, args.injuries, "injuries_dir"),
                                        (nflverse_pbp.DEPTH_CHARTS, args.depth_charts, "depth_charts_dir")):
@@ -504,11 +510,46 @@ def _live_dataset(cfg: dict):
     return ds
 
 
+def _player_inputs(cfg: dict, ds, games):
+    """Play-by-play player stats (all seasons in `games`) and all-position injury rows, plus a data tag."""
+    from sfi.data.sources import nflverse_pbp
+    from sfi.features.players import load_player_games
+    from sfi.features.qb import load_injuries
+    nv = cfg["datasets"]["nflverse"]
+    seasons = sorted({g.season for g in games})
+    pbp_files = nflverse_pbp.latest_files(PROJECT_ROOT / nv["pbp_dir"], seasons)
+    inj_files = nflverse_pbp.latest_release_files(nflverse_pbp.INJURIES, PROJECT_ROOT / nv["injuries_dir"],
+                                                  [s for s in seasons if s >= 2009])
+    stats = load_player_games(pbp_files, PROJECT_ROOT / "data" / "derived" / "pbp")
+    inj = load_injuries(inj_files, games, missing_hours=cfg["features"]["qb"]["missing_timestamp_hours"], positions=None)
+    tag = (nflverse_pbp.combined_snapshot_id([m for _, m in pbp_files.values()]) + "|"
+           + nflverse_pbp.combined_snapshot_id([m for _, m in inj_files.values()]))
+    return stats, inj, tag
+
+
 def _fmt_dist(d: dict | None, target: str) -> str:
     if not d:
         return "–"
     s = d[target]
     return f"{s['q50']:+d} [{s['q10']:+d}, {s['q90']:+d}]" if target == "margin" else f"{s['q50']} [{s['q10']}, {s['q90']}]"
+
+
+def _player_table(records, games: dict, thresholds: dict, status: dict | None, names: dict | None = None) -> list[str]:
+    label = {"pass": "passing", "rush": "rushing", "rec": "receiving"}
+    rows = [r for r in records if r.outcome_type.startswith("player_")]
+    if not rows:
+        return [f"No player forecasts ({status})."]
+    out = ["| Kickoff (ET) | Game | Team | Player | Stat | Median [80%] | P(≥ x) |", "|---|---|---|---|---|---:|---|"]
+    from sfi.data.sources import nflverse as _nv
+    order = {"pass": 0, "rush": 1, "rec": 2}
+    for r in sorted(rows, key=lambda r: (r.scheduled_start_utc, r.game_id, r.distribution["team"],
+                                         order[r.outcome_type.split("_")[1]], -r.distribution["mu"])):
+        d, g = r.distribution, games[r.game_id]
+        stat = r.outcome_type.split("_")[1]
+        p = ", ".join(f"{x}: {v:.2f}" for x, v in d.get("p_at_least", {}).items())
+        out.append(f"| {g.scheduled_start_utc.astimezone(_nv.EASTERN):%a %b %d %H:%M} | {g.away_team} @ {g.home_team} | "
+                   f"{d['team']} | {(names or {}).get(d['player'], d['player'])} | {label[stat]} | {d['q50']} [{d['q10']}, {d['q90']}] | {p} |")
+    return out
 
 
 def _fmt_lines(ln: dict | None) -> str:
@@ -538,6 +579,16 @@ def cmd_forecast(cfg: dict, args) -> int:
         lambda: NaiveScores(),
         lambda: PointsModel(pp, residual_method="empirical", window=sc["residual_window"], min_samples=sc["min_samples"]),
     ]
+    from sfi.models.players import PlayerOppEff, PlayerParams
+    try:
+        pstats, pinj, ptag = _player_inputs(cfg, ds, ds.games)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Player forecasts unavailable ({e}); run `sfi fetch --live`.", file=sys.stderr)
+        pstats = None
+    player_factory = None
+    if pstats is not None:
+        pparams = PlayerParams(**cfg["players"]["params"])
+        player_factory = lambda: PlayerOppEff(pstats, pinj.rows, pparams, data_tag=ptag)  # noqa: E731
     try:
         records, run = live.build_run(
             games=ds.games, factories=[HomeRate, *elo_factories(cfg, tuned_params)], now=now, cfg=live_cfg,
@@ -548,7 +599,8 @@ def cmd_forecast(cfg: dict, args) -> int:
                    "tuned_artifact_sha256": file_sha256(tuned_path(cfg, ds.name)),
                    "tuned_params": tuned["best"]["params"], "primary_model": lv["primary_model"],
                    "dry_run": args.dry_run, "primary_score_model": lv["primary_score_model"]},
-            score_factories=score_factories, lines=ds.lines,
+            score_factories=score_factories, lines=ds.lines, player_factory=player_factory,
+            player_stats=pstats, thresholds=lv["player_thresholds"], max_pbp_gap_hours=lv["max_pbp_gap_hours"],
         )
     except live.StaleDataError as e:
         print(f"Refusing to forecast on stale data: {e}\nRun `sfi fetch` first.", file=sys.stderr)
@@ -563,7 +615,7 @@ def cmd_forecast(cfg: dict, args) -> int:
     for r in records:
         if r.outcome_type == "home_win_excl_tie":
             by_game.setdefault(r.game_id, {})[r.model_name] = r.distribution["p_home_win"]
-        elif r.model_name == lv["primary_score_model"]:
+        elif r.outcome_type == "home_margin_and_total" and r.model_name == lv["primary_score_model"]:
             dist[r.game_id] = r.distribution
     games = {g.game_id: g for g in ds.games}
     market = run["market_p_home_at_issue"]
@@ -584,6 +636,19 @@ def cmd_forecast(cfg: dict, args) -> int:
                      f"{p.get('home_rate', float('nan')):.3f} | {mk} | {_fmt_dist(dist.get(gid), 'margin')} | "
                      f"{_fmt_dist(dist.get(gid), 'total')} | {_fmt_lines(mlines.get(gid))} |")
     print("\n".join(lines))
+    names = {}
+    if pstats is not None:
+        from sfi.data.sources import nflverse_pbp
+        from sfi.features.players import player_names
+        cur = max(g.season for g in ds.games)
+        names = player_names([nflverse_pbp.latest_files(PROJECT_ROOT / cfg["datasets"]["nflverse"]["pbp_dir"], [s])[s][0]
+                              for s in (cur - 1, cur)])
+    player_lines = _player_table(records, games, lv["player_thresholds"], run.get("players"), names)
+    n_players = sum(1 for r in records if r.outcome_type.startswith("player_"))
+    print(f"\nPlayer yardage forecasts: {n_players} ({run.get('players')})")
+    qb_rows = [ln for ln in player_lines if "| passing |" in ln]
+    if qb_rows:
+        print("\n".join(player_lines[:2] + qb_rows[:12]))
     if args.dry_run:
         print("\nDry run: nothing archived.")
         return 0
@@ -600,6 +665,12 @@ def cmd_forecast(cfg: dict, args) -> int:
                       "not guarantees. Market columns are benchmarks only, never model inputs. Margin is home "
                       "minus away points; 80% = central interval of the predictive distribution.\n\n"
                       + "\n".join(lines) + f"\n\n{nflverse.ATTRIBUTION}\n", encoding="utf-8")
+    (PROJECT_ROOT / "reports" / "upcoming_player_forecasts.md").write_text(
+        "# Upcoming player yardage forecasts (prospective, real NFL)\n\n"
+        "> Issued before kickoff and archived in the ledger. Pregame pool: players with recent usage for the team, "
+        "not listed Out/Doubtful when issued; passing = expected starter only. P(≥ x) = model probability of at "
+        "least x yards; estimates, not guarantees. No player-prop market data is used.\n\n"
+        + "\n".join(player_lines) + f"\n\n{nflverse.ATTRIBUTION}\n", encoding="utf-8")
     print(f"\nArchived {len(records)} forecasts for {len(run['game_ids'])} games (run {run['run_id']}) "
           f"to {cfg['storage']['prospective_ledger']}. Commit the ledger to keep an external timestamp.")
     return 0
@@ -650,6 +721,38 @@ def cmd_score(cfg: dict, args) -> int:
         lines_ = SE.section_lines(target, "Prospective", dnote, {**evals, mk["at_issue"].model: mk["at_issue"]},
                                   dsum, mk["snapshot"], cmp_, v["bootstrap_samples"])
         dist_sections.append(lines_)
+    player_sections = []
+    try:
+        pstats, _, _ = _player_inputs(cfg, ds, ds.games)
+    except (FileNotFoundError, ValueError) as e:
+        pstats = None
+        player_sections.append(["## Player yardage", "", f"Not scored: {e}", ""])
+    if pstats is not None:
+        pres = live.score_ledger_players(ledger, games, pstats, cfg["live"]["primary_player_model"])
+        if pres.evals:
+            psum = SE.summarize_target(pres.evals, v["bootstrap_samples"])
+            nmin = min(s["n"] for s in psum.values())
+            pnote = (f"`{cfg['live']['primary_player_model']}`, latest pre-kickoff forecast per player, scored exactly "
+                     f"from the archived pmf; pool players with no opportunity scored 0 ({pres.no_opportunity}). "
+                     f"{pres.pending} game(s) awaiting results or play-by-play. Excluded: {pres.excluded}.")
+            if nmin < 200:
+                pnote += f" **Small sample ({nmin}+ per stat): not enough to judge accuracy or coverage.**"
+            sec = SE.section_lines("player yards", "Prospective", pnote, pres.evals, psum, None, [], v["bootstrap_samples"])
+            sec += ["Threshold probabilities P(yards ≥ x): Brier score and mean forecast vs observed rate:", "",
+                    "| Stat | x | Forecasts | Mean P | Observed rate | Brier |", "|---|---:|---:|---:|---:|---:|"]
+            for stat, by_x in sorted(pres.thresholds.items()):
+                for x, pairs in sorted(by_x.items(), key=lambda kv: int(kv[0])):
+                    ps = [a for a, _ in pairs]
+                    hs = [b for _, b in pairs]
+                    br = sum((a - b) ** 2 for a, b in pairs) / len(pairs)
+                    sec.append(f"| {stat} | {x} | {len(pairs)} | {sum(ps) / len(ps):.3f} | {sum(hs) / len(hs):.3f} | {br:.4f} |")
+            player_sections.append(["## Player yardage", ""] + sec + [""])
+            for name, s_ in psum.items():
+                print(f"  [players] {name:28s} n={s_['n']:5d} CRPS={s_['crps']:.2f} MAE={s_['mae_median']:.1f}")
+        else:
+            player_sections.append(["## Player yardage", "", f"No scorable player forecasts yet "
+                                    f"({pres.pending} game(s) pending).", ""])
+        print(f"Players: {pres.pending} game(s) pending")
     out = PROJECT_ROOT / "reports" / "prospective_scores.md"
     write_markdown(out, title="Prospective scoring (real NFL, issued before kickoff)", data_kind="real",
                    benchmarks=["market_moneyline"],
@@ -659,7 +762,7 @@ def cmd_score(cfg: dict, args) -> int:
                            "`market_moneyline`: line in the scoring snapshot (likely closing). Market spread/total "
                            "lines are point benchmarks (`*_at_issue`: recorded with our forecast; `*_snapshot`: "
                            "scoring snapshot)."],
-                   sections=[section, *dist_sections])
+                   sections=[section, *dist_sections, *player_sections])
     for name, s in summary.items():
         if s.get("n_scored"):
             print(f"  {name:18s} n={s['n_scored']:4d}  Brier={s['brier']:.4f}  LogLoss={s['log_loss']:.4f}")
@@ -682,6 +785,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pbp", metavar="SEASONS", help='also fetch play-by-play, e.g. "2000-2026" or "2026"')
     p.add_argument("--injuries", metavar="SEASONS", help='also fetch injury reports (2009+)')
     p.add_argument("--depth-charts", metavar="SEASONS", help='also fetch depth charts (2001+)')
+    p.add_argument("--live", action="store_true",
+                   help="also fetch the current season's play-by-play and injuries (for live player forecasts)")
     p = sub.add_parser("forecast", help="forecast upcoming games and archive them (real data)")
     p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
     sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")

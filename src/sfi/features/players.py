@@ -73,3 +73,18 @@ def load_player_games(files: dict[int, tuple[Path, dict]], cache_dir: Path) -> P
             for r in csv.DictReader(fh):
                 out.setdefault(r["game_id"], []).append((r["player"], r["team"], r["stat"], float(r["opp"]), float(r["yards"])))
     return out
+
+
+def player_names(paths: list[Path]) -> dict[str, str]:
+    """Display names (e.g. 'P.Mahomes') for player ids, from play-by-play files; later files win."""
+    import pyarrow.parquet as pq
+
+    names: dict[str, str] = {}
+    for path in paths:
+        t = pq.read_table(path, columns=[f"{k}_player_{c}" for k in ("passer", "rusher", "receiver")
+                                          for c in ("id", "name")]).to_pydict()
+        for k in ("passer", "rusher", "receiver"):
+            for i, n in zip(t[f"{k}_player_id"], t[f"{k}_player_name"]):
+                if i and n:
+                    names[i] = n
+    return names

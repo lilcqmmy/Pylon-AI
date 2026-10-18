@@ -28,8 +28,22 @@ def iter_player_walkforward(games: list[Game], model, *, as_of_lead: timedelta =
                 yield replay.as_of, f
 
 
-def make_player_record(as_of, f: PlayerForecast, model, *, source_snapshot_id: str, data_kind: str) -> ForecastRecord:
+def p_at_least(d, threshold: int) -> float:
+    """P(yards >= threshold). Yards are integers, so this is also P(yards > threshold - 0.5): no pushes."""
+    return 1.0 - d.cdf_at(threshold - 1)
+
+
+def make_player_record(as_of, f: PlayerForecast, model, *, source_snapshot_id: str, data_kind: str,
+                       include_pmf: bool = False, thresholds: dict[str, list[int]] | None = None) -> ForecastRecord:
+    """Live records also carry the full pmf (exact scoring later) and P(yards >= x) for standard thresholds."""
+    from sfi.evaluation.scores_eval import pmf_to_json
+
     g = f.game
+    extra = {}
+    if include_pmf:
+        extra["pmf"] = pmf_to_json(f.dist)
+    if thresholds and f.stat in thresholds:
+        extra["p_at_least"] = {str(x): round(p_at_least(f.dist, x), 6) for x in thresholds[f.stat]}
     if as_of >= g.scheduled_start_utc:
         raise ValueError(f"{g.game_id}: forecast as_of is not before kickoff")
     stamp = as_of.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -41,7 +55,7 @@ def make_player_record(as_of, f: PlayerForecast, model, *, source_snapshot_id: s
         scheduled_start_utc=_iso(g.scheduled_start_utc), source_snapshot_id=source_snapshot_id,
         feature_spec_version=model.feature_spec_version, model_name=model.name, model_version=model.version,
         distribution={"player": f.player, "team": f.team, "mu": round(f.mu, 3),
-                      **f.dist.summary((0.1, 0.25, 0.5, 0.75, 0.9))},
+                      **f.dist.summary((0.1, 0.25, 0.5, 0.75, 0.9)), **extra},
         inputs=f.inputs, quality_gate=QualityGate("publish"), data_kind=data_kind,
         simulation_only=data_kind == "synthetic",
     )

@@ -25,6 +25,7 @@ from typing import Callable
 from sfi.data.schema import Game
 from sfi.evaluation.report import ScoredSet
 from sfi.evaluation.scores_eval import ScoreForecast, make_score_record
+from sfi.evaluation.players_eval import make_player_record
 from sfi.evaluation.walkforward import Forecast, GateConfig, Replay, slates_by_kickoff
 from sfi.forecasts.record import ForecastRecord, make_record
 from sfi.models.base import WinModel
@@ -118,6 +119,27 @@ def score_forecast_now(games: list[Game], model, now: datetime, targets: list[Ga
     return out
 
 
+def player_forecast_now(games: list[Game], model, now: datetime, targets: list[Game], *,
+                        as_of_lead: timedelta) -> list[tuple[datetime, object]]:
+    """Player yardage distributions for `targets` issued at `now` (same replay rules as `forecast_now`)."""
+    def issue(r: Replay, g: Game):
+        r.prepare(g)
+        model.predict_players(g)
+
+    replay = _replay_to_now(games, model, now, targets, as_of_lead, issue)
+    out = []
+    for g in targets:
+        replay.prepare(g)
+        out += [(replay.as_of, f) for f in model.predict_players(g)]
+    return out
+
+
+def pbp_gaps(games: list[Game], player_stats: dict, now: datetime, season: int) -> list[Game]:
+    """Final games of `season` whose results are known by `now` but have no play-by-play player rows."""
+    return [g for g in games if g.season == season and g.is_final and g.result_known_by(now)
+            and g.game_id not in player_stats]
+
+
 def git_state(root: Path) -> tuple[str | None, bool | None]:
     try:
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
@@ -132,7 +154,9 @@ def build_run(
     *, games: list[Game], factories: list[Callable[[], WinModel]], now: datetime, cfg: LiveConfig,
     as_of_lead: timedelta, gate: GateConfig, snapshot_id: str, manifest: dict,
     market: dict[str, float], extra: dict, score_factories: list[Callable[[], object]] = (),
-    lines: dict[str, dict] | None = None,
+    lines: dict[str, dict] | None = None, player_factory: Callable[[], object] | None = None,
+    player_stats: dict | None = None, thresholds: dict[str, list[int]] | None = None,
+    max_pbp_gap_hours: float = 48.0,
 ) -> tuple[list[ForecastRecord], dict]:
     retrieved = _parse(manifest["retrieved_at_utc"])
     problems = freshness_problems(games, retrieved, now, cfg)
@@ -153,6 +177,21 @@ def build_run(
         for f in score_forecast_now(games, model, now, targets, as_of_lead=as_of_lead):
             records.append(make_score_record(f, model, source_snapshot_id=snapshot_id, data_kind="real",
                                              include_pmf=True))
+    player_status = None
+    if player_factory is not None:
+        season = max((g.season for g in targets), default=None)
+        gaps = pbp_gaps(games, player_stats or {}, now, season) if season is not None else []
+        old = [g for g in gaps if now - g.result_known_at_utc > timedelta(hours=max_pbp_gap_hours)]
+        if old:
+            # Play-by-play is badly behind: player histories would silently miss games. Skip players.
+            player_status = {"skipped": True, "reason": f"play-by-play missing for {len(old)} game(s) final for "
+                             f"more than {max_pbp_gap_hours:g}h", "games": [g.game_id for g in old]}
+        else:
+            model = player_factory()
+            for as_of, f in player_forecast_now(games, model, now, targets, as_of_lead=as_of_lead):
+                records.append(make_player_record(as_of, f, model, source_snapshot_id=snapshot_id, data_kind="real",
+                                                  include_pmf=True, thresholds=thresholds))
+            player_status = {"skipped": False, "recent_pbp_gaps": [g.game_id for g in gaps]}
     issued = _iso(now)
     lines = lines or {}
     run = {
@@ -164,6 +203,7 @@ def build_run(
         "game_ids": [g.game_id for g in targets], "n_records": len(records),
         "market_p_home_at_issue": {g.game_id: round(market[g.game_id], 6) for g in targets if g.game_id in market},
         "market_lines_at_issue": {g.game_id: lines[g.game_id] for g in targets if g.game_id in lines},
+        **({"players": player_status} if player_status is not None else {}),
         **extra,
     }
     return records, run
@@ -266,6 +306,74 @@ def score_ledger_distributions(
             m[label] = e
         market[target] = m
     return ProspectiveScoreDist(evals, market, excluded, len(pending))
+
+
+@dataclass
+class ProspectivePlayers:
+    evals: dict[str, object]                  # stat -> TargetEval (primary model)
+    thresholds: dict[str, dict[str, list]]    # stat -> threshold -> [(p, hit)]
+    no_opportunity: dict[str, int]
+    excluded: dict[str, int]
+    pending: int
+
+
+def score_ledger_players(ledger: list[dict], games: dict[str, Game], player_stats: dict,
+                         model_name: str, seed: int = 0) -> ProspectivePlayers:
+    """Latest pre-kickoff forecast per (game, player, stat) for `model_name`, scored exactly from its pmf.
+    A game is scored only once it is final and its play-by-play is available; pool players with no
+    opportunity score 0 yards."""
+    import numpy as np
+
+    from sfi.evaluation.scores_eval import LEVELS, PINBALL_QS, TargetEval, pmf_from_json
+
+    excluded = {"game_not_in_snapshot": 0, "issued_at_or_after_kickoff": 0}
+    latest: dict[tuple, dict] = {}
+    for r in ledger:
+        ot = r.get("outcome_type", "")
+        if not ot.startswith("player_") or r["model_name"] != model_name:
+            continue
+        g = games.get(r["game_id"])
+        if g is None:
+            excluded["game_not_in_snapshot"] += 1
+            continue
+        if _parse(r["prediction_as_of_utc"]) >= g.scheduled_start_utc:
+            excluded["issued_at_or_after_kickoff"] += 1
+            continue
+        key = (r["game_id"], r["distribution"]["player"], ot)
+        if key not in latest or r["prediction_as_of_utc"] > latest[key]["prediction_as_of_utc"]:
+            latest[key] = r
+    got = {(gid, p, s): y for gid, rows in player_stats.items() for p, _, s, _, y in rows}
+    rng = np.random.default_rng(seed)
+    evals, thr, zeros, pending = {}, {}, {}, set()
+    for (gid, player, ot), r in sorted(latest.items()):
+        g = games[gid]
+        if not g.is_final or gid not in player_stats:
+            pending.add(gid)
+            continue
+        stat = ot.split("_")[1]
+        d = pmf_from_json(r["distribution"]["pmf"])
+        y = got.get((gid, player, stat))
+        if y is None:
+            zeros[stat] = zeros.get(stat, 0) + 1
+            y = 0.0
+        y = int(round(y))
+        e = evals.setdefault(stat, TargetEval(f"{model_name}:{stat}"))
+        e.game_ids.append(f"{gid}|{player}|{stat}")
+        e.blocks.append(f"{g.season}-W{g.week:02d}")
+        e.y.append(y)
+        e.crps.append(d.crps(y))
+        e.abs_err_median.append(abs(y - d.quantile(0.5)))
+        e.sq_err_mean.append((y - d.mean()) ** 2)
+        e.pinball.append(d.pinball(y, PINBALL_QS))
+        for lv in LEVELS:
+            a, b = d.central_interval(lv)
+            e.hits[lv].append(float(a <= y <= b))
+            e.claimed[lv].append(d.mass(a, b))
+            e.width[lv].append(b - a)
+        e.pit.append(d.pit(y, float(rng.uniform())))
+        for x, pr in r["distribution"].get("p_at_least", {}).items():
+            thr.setdefault(stat, {}).setdefault(x, []).append((pr, float(y >= int(x))))
+    return ProspectivePlayers(evals, thr, zeros, excluded, len(pending))
 
 
 def score_ledger(

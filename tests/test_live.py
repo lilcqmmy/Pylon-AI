@@ -187,3 +187,104 @@ def test_ledger_scoring_separates_win_and_distribution_records():
     assert res.pending == 1
     assert res.market["margin"]["at_issue"].abs_err_median == [3.0]
     assert res.market["total"]["snapshot"].abs_err_median == [1.0]
+
+
+# ---------------------------------------------------------------- player yards in live runs
+from sfi.evaluation import players_eval as PE  # noqa: E402
+from sfi.models.players import PlayerOppEff, PlayerParams, PlayerRecentAvg  # noqa: E402
+
+
+def _player_stats(gs):
+    st = {}
+    for g in gs:
+        if not g.is_final:
+            continue
+        st[g.game_id] = [("q" + g.home_team, g.home_team, "pass", 30.0, 240.0),
+                         ("r" + g.home_team, g.home_team, "rush", 15.0, 60.0),
+                         ("q" + g.away_team, g.away_team, "pass", 28.0, 210.0),
+                         ("w" + g.away_team, g.away_team, "rec", 7.0, 55.0)]
+    return st
+
+
+def test_p_at_least_has_no_push_ambiguity():
+    d = from_normal(250.0, 60.0, -20, 600)
+    assert PE.p_at_least(d, 250) == pytest.approx(1 - d.cdf_at(249))
+    assert PE.p_at_least(d, 200) > PE.p_at_least(d, 250) > PE.p_at_least(d, 300)
+
+
+def test_live_player_forecast_equals_backtest_at_same_as_of():
+    gs = _season()
+    st = _player_stats(gs)
+    target = next(g for g in gs if g.game_id == "W1C")
+    now = target.scheduled_start_utc - timedelta(hours=1)
+    visible = [g if g.result_known_by(now) else replace(g, home_score=None, away_score=None, result_known_at_utc=None)
+               for g in gs]
+    live_fc = {f.player + f.stat: f for _, f in live.player_forecast_now(
+        visible, PlayerOppEff(st, params=PlayerParams(min_k=1)), now, [target], as_of_lead=timedelta(hours=1))}
+    bt = {f.player + f.stat: f for a, f in PE.iter_player_walkforward(gs, PlayerOppEff(st, params=PlayerParams(min_k=1)))
+          if f.game.game_id == "W1C"}
+    assert live_fc.keys() == bt.keys() and live_fc
+    for k in bt:
+        assert live_fc[k].mu == pytest.approx(bt[k].mu) and np.allclose(live_fc[k].dist.pmf, bt[k].dist.pmf)
+
+
+def _run_with_players(gs, st, now):
+    return live.build_run(
+        games=gs, factories=[EloModel], now=now, cfg=CFG, as_of_lead=timedelta(hours=1), gate=live.GateConfig(),
+        snapshot_id="sha256:abc", manifest={**MANIFEST, "retrieved_at_utc": live._iso(now)}, market={}, extra={},
+        player_factory=lambda: PlayerRecentAvg(st, params=PlayerParams(min_k=1)), player_stats=st,
+        thresholds={"pass": [200, 250], "rush": [50], "rec": [50]})
+
+
+def test_build_run_adds_player_records_with_pmf_and_thresholds():
+    gs = _season()
+    now = T0 + timedelta(days=13)
+    recs, run = _run_with_players(gs, _player_stats(gs), now)
+    pr = [r for r in recs if r.outcome_type.startswith("player_")]
+    assert pr and all("pmf" in r.distribution for r in pr)
+    qb = next(r for r in pr if r.outcome_type == "player_pass_yards")
+    assert set(qb.distribution["p_at_least"]) == {"200", "250"}
+    assert run["players"] == {"skipped": False, "recent_pbp_gaps": []}
+
+
+def test_players_skipped_when_play_by_play_lags_too_long():
+    gs = _season()
+    st = _player_stats(gs)
+    del st[gs[0].game_id]  # a week-1 game is final but has no play-by-play
+    now = T0 + timedelta(days=13)
+    recs, run = _run_with_players(gs, st, now)
+    assert not any(r.outcome_type.startswith("player_") for r in recs)
+    assert run["players"]["skipped"] and run["players"]["games"] == [gs[0].game_id]
+    # A gap younger than the limit is recorded but does not block forecasts
+    gs2 = _season()
+    st2 = _player_stats(gs2)
+    last_final = max((g for g in gs2 if g.is_final), key=lambda g: g.scheduled_start_utc)
+    del st2[last_final.game_id]
+    now2 = last_final.result_known_at_utc + timedelta(hours=2)
+    recs2, run2 = _run_with_players(gs2, st2, now2)
+    assert run2["players"] == {"skipped": False, "recent_pbp_gaps": [last_final.game_id]}
+
+
+def test_player_ledger_scoring_latest_zero_and_pending():
+    g1 = make_game(gid="G1", home="A", away="B", start=T0, hs=27, as_=20)
+    g2 = make_game(gid="G2", home="C", away="D", start=T0 + timedelta(hours=3), hs=24, as_=21)  # final, no pbp yet
+    games = {"G1": g1, "G2": g2}
+    d_old, d_new = from_normal(150.0, 50.0, -20, 600), from_normal(260.0, 60.0, -20, 600)
+
+    def prec(gid, player, stat, t, d):
+        return {"game_id": gid, "model_name": "players_opp_eff", "outcome_type": f"player_{stat}_yards",
+                "prediction_as_of_utc": live._iso(t),
+                "distribution": {"player": player, "pmf": SE.pmf_to_json(d),
+                                 "p_at_least": {"250": round(PE.p_at_least(d, 250), 6)}}}
+
+    t1, t2 = T0 - timedelta(days=2), T0 - timedelta(hours=2)
+    ledger = [prec("G1", "qa", "pass", t1, d_old), prec("G1", "qa", "pass", t2, d_new),
+              prec("G1", "wa", "rec", t2, from_normal(50.0, 25.0, -10, 300)),
+              prec("G2", "qc", "pass", t2, d_new), _rec("G1", "elo_tuned", t2, 0.6)]
+    stats = {"G1": [("qa", "A", "pass", 33.0, 281.0)]}  # wa had no target -> 0 yards
+    res = live.score_ledger_players(ledger, games, stats, "players_opp_eff")
+    e = res.evals["pass"]
+    assert e.y == [281] and e.crps[0] == pytest.approx(SE.pmf_from_json(SE.pmf_to_json(d_new)).crps(281))
+    assert res.evals["rec"].y == [0] and res.no_opportunity == {"rec": 1}
+    assert res.pending == 1
+    assert res.thresholds["pass"]["250"][0][1] == 1.0

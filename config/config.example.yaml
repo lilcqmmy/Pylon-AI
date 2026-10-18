@@ -98,6 +98,12 @@ live:                           # `sfi forecast` / `sfi score` (prospective, rea
   dataset: nflverse
   primary_model: elo_tuned      # headline model in printed output; all live models are archived
   primary_score_model: scores_points_empirical  # margin/total columns in printed output
+  primary_player_model: players_opp_eff
+  player_thresholds:            # archived as P(yards >= x); integer yards, so no pushes
+    pass: [200, 250, 300]
+    rush: [50, 75, 100]
+    rec: [50, 75, 100]
+  max_pbp_gap_hours: 48         # skip player forecasts if play-by-play lags results by more than this
   horizon_days: 8               # forecast unplayed games kicking off within this window
   min_lead_minutes: 10          # never forecast a game closer than this to kickoff
   max_snapshot_age_hours: 24    # refuse to forecast from an older snapshot (run `sfi fetch`)

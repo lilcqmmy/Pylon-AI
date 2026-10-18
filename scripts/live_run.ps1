@@ -1,4 +1,5 @@
-# One prospective-forecast cycle: fetch -> forecast -> score -> commit ledger.
+# One prospective-forecast cycle: fetch (schedules + current-season play-by-play and injuries)
+# -> forecast -> score -> commit ledger.
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live_run.ps1
 # Exit codes: 0 ok, 1 fetch failed, 2 forecast refused or failed (score still runs), 3 git commit failed.
 # Output is also appended to logs\live_runs.log (git-ignored).
@@ -26,7 +27,7 @@ function Run([string]$label, [string[]]$cmdArgs) {
 }
 
 $status = 0
-if ((Run "fetch" @("fetch")) -ne 0) { Say "RESULT: fetch failed; nothing forecast."; exit 1 }
+if ((Run "fetch" @("fetch", "--live")) -ne 0) { Say "RESULT: fetch failed; nothing forecast."; exit 1 }
 if ((Run "forecast" @("forecast")) -ne 0) { $status = 2 }
 [void](Run "score" @("score"))
 

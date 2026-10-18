@@ -161,6 +161,15 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
   `scores_naive` margin/total distributions with their full pmfs, and records the market spread/total
   at issue time (benchmark). `sfi score` scores them exactly (CRPS, MAE, coverage, PIT) against market
   lines at issue and in the scoring snapshot. A test confirms live = backtest distributions at the same as-of.
+- **Player yards live (2026-10-18):** each run also archives `players_opp_eff` passing/rushing/receiving
+  distributions (full pmf) with P(yards ≥ x) for pass 200/250/300, rush and rec 50/75/100, for the
+  pregame pool (expected QB starter; recent-usage players not listed Out/Doubtful). Report:
+  `reports/upcoming_player_forecasts.md`. Player forecasts are skipped if play-by-play lags results by
+  more than 48 h; younger gaps are recorded in the run log. `sfi score` scores them exactly (CRPS, MAE,
+  coverage) plus Brier for each threshold. `sfi fetch --live` (used by the scheduled runs) refreshes the
+  current season's play-by-play and injuries, downloading only when changed; scheduled-task prompts updated.
+  Dry run: 375 player forecasts for 17 games in ~23 s. Caveat: QBs who only recently took over get very
+  wide passing distributions (their errors are pooled with past backup-QB forecasts).
 - **Automated (2026-10-18):** `scripts/live_run.ps1` (fetch → forecast → score → commit `ledger/`),
   run by Claude desktop scheduled tasks `nfl-live-forecast-weekday` (Mon and Thu 3:00 PM ET) and
   `nfl-live-forecast-sunday` (Sun 8:30 AM ET) and `nfl-live-forecast-sunday-evening` (Sun 6:30 PM ET),
@@ -171,7 +180,7 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Not built / not verified
 - No live forecast has been scored yet (all 18 games pending).
-- No weather-forecast features; player yardage forecasts are not live; no joint (correlated) simulations.
+- No weather-forecast features; no joint (correlated) simulations across players or game outcomes.
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
 - Local git repository only (branch `main`); no remote, no CI.
 
@@ -183,9 +192,9 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Next steps
 1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
-2. Player yardage distributions are built (backtest). Options: improve passing (opponent pass
-   defense, QB-specific adjustments), add player forecasts to live runs, threshold probabilities
-   P(yards > x), or reveal the holdout for an honest estimate of the frozen models.
+2. Player yardage distributions are built and live. Options: improve passing (opponent pass defense,
+   QB-specific adjustments, narrower spreads for new starters), or reveal the holdout for an honest
+   estimate of the frozen models.
 3. Score-margin and total distributions with interval-coverage tests.
 4. Optional: remote repository and CI running pytest.
 
@@ -200,4 +209,5 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-18 `44fb78c`: `elo_qb` built and validated on 2010–2019; no gain over Elo; not promoted.
 - 2026-10-18 `4e87267`: Stage 2 margin/total distributions with coverage and PIT tests; validated on 2001–2019.
 - 2026-10-18 `141105b`: margin/total distributions added to live forecasts and scoring.
-- 2026-10-18: player passing/rushing/receiving yard distributions, validated on 2010–2019.
+- 2026-10-18 `3e1a39c`: player passing/rushing/receiving yard distributions, validated on 2010–2019.
+- 2026-10-18: player yard distributions with P(yards ≥ x) added to live forecasts and scoring.

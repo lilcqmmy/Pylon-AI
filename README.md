@@ -40,14 +40,16 @@ python -m venv .venv
 Prospective (live) forecasts for upcoming real games:
 
 ```powershell
-.\.venv\Scripts\sfi.exe fetch                # results must be current, or forecast refuses to run
+.\.venv\Scripts\sfi.exe fetch --live         # schedules + current-season play-by-play and injuries
 .\.venv\Scripts\sfi.exe forecast --dry-run   # preview
 .\.venv\Scripts\sfi.exe forecast             # append to ledger/prospective_forecasts.jsonl
 .\.venv\Scripts\sfi.exe score                # after a later fetch: score forecasts whose games are final
 ```
 
 `forecast` uses the frozen tuned Elo (win probability) and the team points model (score-margin and
-game-total distributions, full pmf stored), replays all history up to now, and archives each forecast with
+game-total distributions) and the player opportunity x efficiency model (passing/rushing/receiving
+yards with P(yards >= x) at standard thresholds; full pmfs stored), replays all history up to now,
+and archives each forecast with
 its run (snapshot, code commit, tuned-parameter hash, market line at issue time as a benchmark). It
 refuses to run if the snapshot is over 24h old or any game is missing a result that should be known.
 `score` uses the latest forecast issued before each game's actual kickoff (Brier/log loss for win
