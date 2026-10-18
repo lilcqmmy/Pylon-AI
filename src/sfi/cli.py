@@ -6,6 +6,8 @@
   sfi backtest [--dataset NAME] [--reveal-holdout]
                                   walk-forward forecasts for all models; holdout stays sealed unless
                                   --reveal-holdout is given (each reveal is logged)
+  sfi forecast [--dry-run]        forecast upcoming real games and append them to the ledger
+  sfi score                       score ledger forecasts once results are in a newer snapshot
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import sys
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
+from sfi import live
 from sfi.config import PROJECT_ROOT, load_config
 from sfi.data import synthetic
 from sfi.data.schema import file_sha256, write_games_csv
@@ -40,6 +43,28 @@ def default_params(cfg: dict) -> EloParams:
 
 def tuned_path(cfg: dict, dataset: str):
     return PROJECT_ROOT / cfg["tuning"]["artifact_dir"] / f"{dataset}_elo_tuned.json"
+
+
+def load_tuned(cfg: dict, ds) -> tuple[EloParams, dict] | None:
+    """Tuned params for this dataset, or None (with a message) if missing or stale."""
+    path = tuned_path(cfg, ds.name)
+    if not path.exists():
+        print(f"No tuned Elo for {ds.name}; run `sfi tune --dataset {ds.name}` first.", file=sys.stderr)
+        return None
+    tuned = json.loads(path.read_text(encoding="utf-8"))
+    if tuned["validation_seasons"] != sorted(ds.splits.validation):
+        print("Validation seasons changed since tuning; re-run `sfi tune`.", file=sys.stderr)
+        return None
+    return EloParams(**tuned["best"]["params"]), tuned
+
+
+def elo_factories(cfg: dict, tuned_params: EloParams) -> list:
+    c = cfg["calibration"]
+    return [
+        lambda: EloModel(tuned_params, name="elo_tuned"),
+        lambda: PlattCalibrated(EloModel(tuned_params, name="elo_tuned"), min_samples=c["min_samples"],
+                                exclude_first_season=c["exclude_first_season"], name="elo_tuned_platt"),
+    ]
 
 
 def cmd_synth(cfg: dict, args) -> int:
@@ -97,29 +122,23 @@ def cmd_tune(cfg: dict, args) -> int:
 def cmd_backtest(cfg: dict, args) -> int:
     ds = load_dataset(cfg, args.dataset)
     val, hold = ds.splits.validation, ds.splits.holdout
-    path = tuned_path(cfg, ds.name)
-    if not path.exists():
-        print(f"No tuned Elo for {ds.name}; run `sfi tune --dataset {ds.name}` first.", file=sys.stderr)
+    loaded = load_tuned(cfg, ds)
+    if loaded is None:
         return 1
-    tuned = json.loads(path.read_text(encoding="utf-8"))
-    if tuned["snapshot_id"] != ds.snapshot_id or tuned["validation_seasons"] != sorted(val):
-        print("Tuned Elo is stale (different data snapshot or validation seasons); re-run `sfi tune`.",
+    tuned_params, tuned = loaded
+    if tuned["snapshot_id"] != ds.snapshot_id:
+        print("Tuned Elo was fit on a different data snapshot; re-run `sfi tune` before backtesting.",
               file=sys.stderr)
         return 1
-    tuned_params, default = EloParams(**tuned["best"]["params"]), default_params(cfg)
+    default = default_params(cfg)
     c, f = cfg["calibration"], cfg["forecast"]
     gate = GateConfig(f["publish_gate"].get("min_prior_games_per_team") or 0)
     lead = timedelta(hours=f["as_of_lead_hours"])
     last = max(hold) if args.reveal_holdout else max(val)
     games = ds.games_through(last)  # sealed holdout: its games are not even loaded
 
-    factories = [
-        CoinFlip, HomeRate,
-        lambda: EloModel(default, name="elo_default"),
-        lambda: EloModel(tuned_params, name="elo_tuned"),
-        lambda: PlattCalibrated(EloModel(tuned_params, name="elo_tuned"), min_samples=c["min_samples"],
-                                exclude_first_season=c["exclude_first_season"], name="elo_tuned_platt"),
-    ]
+    factories = [CoinFlip, HomeRate, lambda: EloModel(default, name="elo_default"),
+                 *elo_factories(cfg, tuned_params)]
     records = run_walkforward(games, factories, source_snapshot_id=ds.snapshot_id,
                               data_kind=ds.data_kind, gate=gate, as_of_lead=lead)
     archive = ForecastArchive(PROJECT_ROOT / cfg["storage"]["backtest_archive"])
@@ -195,6 +214,123 @@ def cmd_backtest(cfg: dict, args) -> int:
     return 0
 
 
+def _live_dataset(cfg: dict):
+    ds = load_dataset(cfg, cfg["live"]["dataset"])
+    if ds.data_kind != "real":
+        raise DatasetError("prospective forecasting requires a real dataset")
+    return ds
+
+
+def cmd_forecast(cfg: dict, args) -> int:
+    ds = _live_dataset(cfg)
+    loaded = load_tuned(cfg, ds)
+    if loaded is None:
+        return 1
+    tuned_params, tuned = loaded  # frozen design; may come from an older snapshot by intent
+    lv, f = cfg["live"], cfg["forecast"]
+    dcfg = cfg["datasets"][ds.name]
+    live_cfg = live.LiveConfig(lv["horizon_days"], lv["min_lead_minutes"], lv["max_snapshot_age_hours"],
+                               dcfg["known_at_hours"])
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    commit, dirty = live.git_state(PROJECT_ROOT)
+    manifest = ds.manifest
+    try:
+        records, run = live.build_run(
+            games=ds.games, factories=[HomeRate, *elo_factories(cfg, tuned_params)], now=now, cfg=live_cfg,
+            as_of_lead=timedelta(hours=f["as_of_lead_hours"]),
+            gate=GateConfig(f["publish_gate"].get("min_prior_games_per_team") or 0),
+            snapshot_id=ds.snapshot_id, manifest=manifest, market=ds.benchmarks.get("market_moneyline", {}),
+            extra={"dataset": ds.name, "code_commit": commit, "code_dirty": dirty,
+                   "tuned_artifact_sha256": file_sha256(tuned_path(cfg, ds.name)),
+                   "tuned_params": tuned["best"]["params"], "primary_model": lv["primary_model"],
+                   "dry_run": args.dry_run},
+        )
+    except live.StaleDataError as e:
+        print(f"Refusing to forecast on stale data: {e}\nRun `sfi fetch` first.", file=sys.stderr)
+        return 1
+    if not records:
+        print(f"No unplayed games kick off in the next {lv['horizon_days']} days "
+              f"(at least {lv['min_lead_minutes']} min from now).")
+        return 0
+
+    by_game: dict[str, dict[str, float]] = {}
+    for r in records:
+        by_game.setdefault(r.game_id, {})[r.model_name] = r.distribution["p_home_win"]
+    games = {g.game_id: g for g in ds.games}
+    market = run["market_p_home_at_issue"]
+    eastern = nflverse.EASTERN
+    lines = [f"Issued {run['issued_at_utc']} from snapshot {ds.snapshot_id} "
+             f"(retrieved {manifest['retrieved_at_utc']}); code {commit[:7] if commit else '?'}"
+             f"{' (uncommitted changes)' if dirty else ''}", "",
+             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) home_rate | Market (benchmark) |",
+             "|---|---|---:|---:|---:|---:|"]
+    for gid in run["game_ids"]:
+        g, p = games[gid], by_game[gid]
+        mk = f"{market[gid]:.3f}" if gid in market else "–"
+        site = " (neutral)" if g.neutral_site else ""
+        lines.append(f"| {g.scheduled_start_utc.astimezone(eastern):%a %b %d %H:%M} | {g.away_team} @ {g.home_team}{site} | "
+                     f"{p.get(lv['primary_model'], float('nan')):.3f} | {p.get('elo_tuned_platt', float('nan')):.3f} | "
+                     f"{p.get('home_rate', float('nan')):.3f} | {mk} |")
+    print("\n".join(lines))
+    if args.dry_run:
+        print("\nDry run: nothing archived.")
+        return 0
+    ledger = live.read_jsonl(PROJECT_ROOT / cfg["storage"]["prospective_ledger"])
+    if any(r["forecast_id"] in {x.forecast_id for x in records} for r in ledger):
+        print("These forecast IDs are already in the ledger; nothing appended.", file=sys.stderr)
+        return 1
+    live.append_jsonl(PROJECT_ROOT / cfg["storage"]["prospective_ledger"], [json.loads(r.to_json()) for r in records])
+    live.append_jsonl(PROJECT_ROOT / cfg["storage"]["forecast_run_log"], [run])
+    report = PROJECT_ROOT / "reports" / "upcoming_forecasts.md"
+    report.parent.mkdir(exist_ok=True)
+    report.write_text("# Upcoming forecasts (prospective, real NFL)\n\n"
+                      "> Issued before kickoff and archived in the ledger. Probabilities are model estimates, "
+                      "not guarantees. Market column is a benchmark only, never a model input.\n\n"
+                      + "\n".join(lines) + f"\n\n{nflverse.ATTRIBUTION}\n", encoding="utf-8")
+    print(f"\nArchived {len(records)} forecasts for {len(run['game_ids'])} games (run {run['run_id']}) "
+          f"to {cfg['storage']['prospective_ledger']}. Commit the ledger to keep an external timestamp.")
+    return 0
+
+
+def cmd_score(cfg: dict, args) -> int:
+    ds = _live_dataset(cfg)
+    ledger = live.read_jsonl(PROJECT_ROOT / cfg["storage"]["prospective_ledger"])
+    if not ledger:
+        print("No prospective forecasts in the ledger yet; run `sfi forecast`.")
+        return 0
+    runs = live.read_jsonl(PROJECT_ROOT / cfg["storage"]["forecast_run_log"])
+    games = {g.game_id: g for g in ds.games}
+    bench = {"market_at_issue": live.market_at_issue(runs, ledger, games),
+             "market_moneyline": ds.benchmarks.get("market_moneyline", {})}
+    res = live.score_ledger(ledger, games, bench)
+    v = cfg["validation"]
+    summary = summarize(res.sets, v["bootstrap_samples"])
+    n = max((s.get("n_scored", 0) for s in summary.values()), default=0)
+    note = (f"Latest forecast issued before actual kickoff, per model and game. {res.pending} game(s) still "
+            f"awaiting results. Excluded records: {res.excluded}.")
+    if n < 100:
+        note += f" **Only {n} scored games: far too few to judge skill or calibration.**"
+    comparisons = [("elo_tuned", "home_rate"), ("elo_tuned_platt", "elo_tuned"),
+                   ("elo_tuned", "market_at_issue"), ("elo_tuned", "market_moneyline")]
+    section = section_lines("Prospective forecasts", note, res.sets, summary, comparisons=comparisons,
+                            reliability=["elo_tuned"] if n >= 100 else [],
+                            n_boot=v["bootstrap_samples"], n_bins=v["calibration_bins"])
+    out = PROJECT_ROOT / "reports" / "prospective_scores.md"
+    write_markdown(out, title="Prospective scoring (real NFL, issued before kickoff)", data_kind="real",
+                   benchmarks=["market_moneyline"],
+                   header=[f"Scored against snapshot `{ds.snapshot_id}` ({ds.notes[0]})",
+                           f"Ledger: {len(ledger)} forecast records from {len(runs)} run(s)",
+                           "`market_at_issue`: market line recorded when our forecast was issued; "
+                           "`market_moneyline`: line in the scoring snapshot (likely closing)."],
+                   sections=[section])
+    for name, s in summary.items():
+        if s.get("n_scored"):
+            print(f"  {name:18s} n={s['n_scored']:4d}  Brier={s['brier']:.4f}  LogLoss={s['log_loss']:.4f}")
+    print(f"{res.pending} game(s) pending; excluded {res.excluded}")
+    print("Report: reports/prospective_scores.md")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="sfi", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -202,6 +338,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("synth", help="generate fictional NFL-like seasons")
     sub.add_parser("fetch", help="download a new nflverse schedules snapshot")
+    p = sub.add_parser("forecast", help="forecast upcoming games and archive them (real data)")
+    p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
+    sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")
     for name in ("tune", "backtest"):
         p = sub.add_parser(name)
         p.add_argument("--dataset", help="dataset name from config (default: config `dataset`)")
@@ -212,7 +351,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     if getattr(args, "dataset", None) is None and args.cmd in ("tune", "backtest"):
         args.dataset = cfg["dataset"]
-    handlers = {"synth": cmd_synth, "fetch": cmd_fetch, "tune": cmd_tune, "backtest": cmd_backtest}
+    handlers = {"synth": cmd_synth, "fetch": cmd_fetch, "tune": cmd_tune, "backtest": cmd_backtest,
+                "forecast": cmd_forecast, "score": cmd_score}
     try:
         return handlers[args.cmd](cfg, args)
     except DatasetError as e:

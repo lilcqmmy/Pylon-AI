@@ -59,14 +59,22 @@ forecast:
     min_prior_games_per_team: 0   # 0 = gate off; choose a value only after an empirical study
     minimum_calibrated_probability: null
 
+live:                           # `sfi forecast` / `sfi score` (prospective, real data only)
+  dataset: nflverse
+  primary_model: elo_tuned      # headline model in printed output; all live models are archived
+  horizon_days: 8               # forecast unplayed games kicking off within this window
+  min_lead_minutes: 10          # never forecast a game closer than this to kickoff
+  max_snapshot_age_hours: 24    # refuse to forecast from an older snapshot (run `sfi fetch`)
+
 validation:
   scheme: rolling_origin
   calibration_bins: 10
   bootstrap_samples: 2000
 
 storage:
-  forecast_archive: archive/forecasts.jsonl          # future live (pre-game) forecasts
-  backtest_archive: archive/backtest_forecasts.jsonl  # walk-forward replays
+  prospective_ledger: ledger/prospective_forecasts.jsonl  # live pre-game forecasts (tracked in git)
+  forecast_run_log: ledger/forecast_runs.jsonl            # one entry per `sfi forecast` run
+  backtest_archive: archive/backtest_forecasts.jsonl      # walk-forward replays (git-ignored)
   holdout_reveal_log: archive/holdout_reveals.jsonl
   immutable_forecasts: true
 

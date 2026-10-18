@@ -51,22 +51,33 @@ Splits fixed by the owner on 2026-10-15 before any real-data results were viewed
 Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449, default 0.2524, oracle
 0.2351. The holdout was viewed once before the K grid was widened (from the validation edge signal only).
 
+### Prospective forecasting (built 2026-10-18; no live forecasts archived yet)
+- `sfi forecast`: frozen tuned Elo (K 20, HFA 48, regression 0.5, chosen on 2001–2019), replays all
+  history to the current time, and forecasts unplayed games in the next 8 days (at least 10 min before
+  kickoff). Models archived: `elo_tuned` (primary), `elo_tuned_platt`, `home_rate`.
+- Ledger `ledger/prospective_forecasts.jsonl` plus run log `ledger/forecast_runs.jsonl` (snapshot,
+  code commit and dirty flag, tuned-parameter hash, market line at issue time as a benchmark).
+- Refuses stale data: snapshot older than 24h, or any game whose result should be known but isn't.
+  Verified: refuses the 2026-10-15 snapshot (72h old, SEA@DEN and HOU@JAX results missing).
+- `sfi score`: latest pre-kickoff forecast per model and game; excludes forecasts issued after the
+  actual kickoff; compares with the market at issue time and the snapshot's (likely closing) line.
+- A test confirms a live forecast equals the backtest forecast for the same game and as-of time.
+
 ### Not built / not verified
-- No prospective (live) forecasts yet; all real-data numbers are retrospective.
+- No live forecasts archived yet; all real-data scores are retrospective.
 - No injury, QB, roster or weather-forecast features; no score/margin/total or player-stat distributions.
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
 - Local git repository only (branch `main`); no remote, no CI.
 
 ### Open decisions (owner)
-- Start prospective 2026 forecasts now (weeks 7–18 plus playoffs remain)?
+- Cadence for live runs (e.g. `fetch` + `forecast` Thursday afternoon and Sunday morning) and whether to automate it.
 - When to reveal the 2020–2025 holdout (only after the next model changes are frozen).
 - Report the 09:00 kickoff defect upstream to nflverse/nfldata?
 - Run environment (local Windows PC assumed for now), budget.
 - Abstention thresholds: to be set from empirical studies, not guessed.
 
 ### Next steps
-1. Prospective forecasting: `sfi forecast` for upcoming 2026 games, archived before kickoff with
-   `data_kind = "real"`, plus scoring once results arrive.
+1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
 2. Close the gap to the market with point-in-time features: QB starter changes and injury reports
    (nflverse injuries have `date_modified`; needs its own known-at evaluation).
 3. Score-margin and total distributions with interval-coverage tests.
@@ -76,4 +87,5 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-15 `de593b9`: Stage 0/1 skeleton; untuned Elo on synthetic seasons 2021–2024.
 - 2026-10-15 `e797848`: Elo tuning on validation seasons, untouched holdout, walk-forward Platt recalibration.
 - 2026-10-15 `a981217`: nflverse schedules evaluated (license, coverage, known-at); adapter planned.
-- 2026-10-15: nflverse adapter built; first real-data validation results; holdout 2020–2025 sealed.
+- 2026-10-15 `b11a2c5`: nflverse adapter built; first real-data validation results; holdout 2020–2025 sealed.
+- 2026-10-18: `sfi forecast` / `sfi score` for prospective forecasts with freshness gates and a ledger.

@@ -41,39 +41,58 @@ def quality_gate(model: WinModel, game: Game, cfg: GateConfig) -> QualityGate:
     return QualityGate("abstain" if reasons else "publish", tuple(reasons))
 
 
+class Replay:
+    """Feeds a model results strictly in known-at order and issues forecasts at given as-of times.
+    Shared by the backtest and by prospective (live) forecasting."""
+
+    def __init__(self, games: list[Game], model: WinModel):
+        self.model = model
+        self._pending = sorted(
+            (g for g in games if g.is_final and g.result_known_at_utc is not None),
+            key=lambda g: (g.result_known_at_utc, g.scheduled_start_utc, g.game_id),
+        )
+        self._i = 0
+        self.as_of: datetime | None = None
+
+    def advance_to(self, as_of: datetime) -> None:
+        if self.as_of is not None and as_of < self.as_of:
+            raise ValueError("as-of time cannot move backwards")
+        self.as_of = as_of
+        batch = []
+        while self._i < len(self._pending) and self._pending[self._i].result_known_at_utc <= as_of:
+            batch.append(self._pending[self._i])
+            self._i += 1
+        for g in sorted(batch, key=lambda g: (g.scheduled_start_utc, g.game_id)):
+            if g.season != getattr(self.model, "season", None):
+                self.model.start_season(g.season)
+            self.model.observe(g)
+
+    def forecast(self, game: Game, gate: GateConfig = GateConfig(), with_inputs: bool = True) -> Forecast:
+        if self.as_of is None or self.as_of >= game.scheduled_start_utc:
+            raise ValueError(f"{game.game_id}: forecast must be issued before kickoff")
+        if getattr(self.model, "season", None) != game.season:
+            self.model.start_season(game.season)
+        p = self.model.predict_home_win(game)
+        return Forecast(game, self.as_of, p, quality_gate(self.model, game, gate),
+                        self.model.inputs_for(game) if with_inputs else {})
+
+
+def slates_by_kickoff(games: list[Game]) -> list[tuple[datetime, list[Game]]]:
+    slates: dict[datetime, list[Game]] = defaultdict(list)
+    for g in games:
+        slates[g.scheduled_start_utc].append(g)
+    return [(k, sorted(slates[k], key=lambda g: g.game_id)) for k in sorted(slates)]
+
+
 def iter_walkforward(
     games: list[Game], model: WinModel, *, gate: GateConfig = GateConfig(),
     as_of_lead: timedelta = timedelta(hours=1), with_inputs: bool = True,
 ) -> Iterator[Forecast]:
-    slates: dict[datetime, list[Game]] = defaultdict(list)
-    for g in games:
-        slates[g.scheduled_start_utc].append(g)
-    # Results in the order they became known; released only once known_at <= as_of.
-    pending = sorted(
-        (g for g in games if g.is_final and g.result_known_at_utc is not None),
-        key=lambda g: (g.result_known_at_utc, g.scheduled_start_utc, g.game_id),
-    )
-    i = 0
-    for kickoff in sorted(slates):
-        slate = sorted(slates[kickoff], key=lambda g: g.game_id)
-        season = slate[0].season
-        as_of = kickoff - as_of_lead
-        batch = []
-        while i < len(pending) and pending[i].result_known_at_utc <= as_of:
-            batch.append(pending[i])
-            i += 1
-        for g in sorted(batch, key=lambda g: (g.scheduled_start_utc, g.game_id)):
-            if g.season != getattr(model, "season", None):
-                model.start_season(g.season)
-            model.observe(g)
-        if getattr(model, "season", None) != season:
-            model.start_season(season)
+    replay = Replay(games, model)
+    for kickoff, slate in slates_by_kickoff(games):
+        replay.advance_to(kickoff - as_of_lead)
         for g in slate:
-            p = model.predict_home_win(g)
-            yield Forecast(
-                g, as_of, p, quality_gate(model, g, gate),
-                model.inputs_for(g) if with_inputs else {},
-            )
+            yield replay.forecast(g, gate, with_inputs)
 
 
 def run_walkforward(

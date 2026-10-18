@@ -29,6 +29,21 @@ python -m venv .venv
 .\.venv\Scripts\sfi.exe backtest --dataset synthetic --reveal-holdout
 ```
 
+Prospective (live) forecasts for upcoming real games:
+
+```powershell
+.\.venv\Scripts\sfi.exe fetch                # results must be current, or forecast refuses to run
+.\.venv\Scripts\sfi.exe forecast --dry-run   # preview
+.\.venv\Scripts\sfi.exe forecast             # append to ledger/prospective_forecasts.jsonl
+.\.venv\Scripts\sfi.exe score                # after a later fetch: score forecasts whose games are final
+```
+
+`forecast` uses the frozen tuned Elo, replays all history up to now, and archives each forecast with
+its run (snapshot, code commit, tuned-parameter hash, market line at issue time as a benchmark). It
+refuses to run if the snapshot is over 24h old or any game is missing a result that should be known.
+`score` uses the latest forecast issued before each game's actual kickoff. Commit `ledger/` after each
+run so git holds an outside record of when forecasts were made.
+
 `--reveal-holdout` evaluates the holdout seasons and appends an entry to `archive/holdout_reveals.jsonl`.
 For real data, use it only once the model design is frozen.
 
@@ -53,7 +68,9 @@ src/sfi/
   evaluation/tuning.py      Elo grid search; holdout seasons are dropped before it runs
   evaluation/metrics.py     Brier, log loss, reliability table, calibration slope, block bootstrap
   evaluation/report.py      Scoring, benchmarks, paired comparisons, Markdown/JSON report
-  cli.py                    `sfi synth | fetch | tune | backtest`
+  live.py                   Prospective forecasting (freshness gates, run log) and ledger scoring
+  cli.py                    `sfi synth | fetch | tune | backtest | forecast | score`
+ledger/                     Prospective forecasts and run log (append-only, tracked in git)
 tests/                      Leakage, metrics, archive immutability, schema, adapter, models, end-to-end
 ```
 

@@ -70,7 +70,8 @@ def summarize(sets: dict[str, ScoredSet], n_boot: int, seed: int = 0) -> dict[st
             out[name] = {"n_scored": 0}
             continue
         b, b_lo, b_hi = M.block_bootstrap_mean_ci(M.brier_terms(s.p, s.y), s.block, n_boot, seed=seed)
-        a, sl = M.calibration_intercept_slope(s.p, s.y)
+        # Calibration slope is meaningless on tiny samples (and can fail to converge).
+        a, sl = M.calibration_intercept_slope(s.p, s.y) if len(s.p) >= 30 else (float("nan"), float("nan"))
         out[name] = {
             "n_scored": len(s.p), "n_tie": s.n_tie, "n_abstain": s.n_abstain,
             "brier": b, "brier_ci95": [b_lo, b_hi], "log_loss": M.log_loss(s.p, s.y),
