@@ -86,6 +86,31 @@ has (injuries, QB changes, news). The feature models stay out of the live runs.
   [−0.0012, +0.0007], no clear difference**; helps on Out/Doubtful games (−0.0041, n = 131) but those
   are rare. Not promoted to live. A scaling bug for rare flags was found and fixed during validation.
 
+### Score-margin and game-total distributions (Stage 2, 2026-10-18)
+- `sfi backtest-scores`: walk-forward predictive distributions over integer margins (home − away) and
+  totals; archived as quantile summaries (`archive/score_forecasts.jsonl`). Holdout sealed.
+- Models: `scores_naive` (past outcomes only), `scores_elo_*` (margin mean from tuned Elo points edge,
+  OLS refit each season), `scores_points_*` (team offense/defense scoring ratings; untuned defaults).
+  Spread from each model's own past residuals: `*_normal` (discretized Normal) or `*_empirical` (residual
+  shape, keeps key-number mass).
+- Evaluation: CRPS, MAE (median), RMSE (mean), pinball loss, 50/80/90% central-interval coverage tested
+  against each forecast's own claimed mass (95% Wilson interval), randomized-PIT χ² uniformity test,
+  market spread/total lines as point benchmarks.
+
+Validation 2001–2019 (5,065 games):
+
+| Target | Best model | CRPS | vs naive | MAE | Market line MAE | Coverage 50/80/90 (obs/claimed) |
+|---|---|---:|---|---:|---:|---|
+| Margin | scores_points_empirical | 7.63 | −0.61 [−0.68, −0.53] | 10.63 | 10.41 | .528/.523, .816/.812, .905/.908 ✓ |
+| Total | scores_points_empirical | 7.70 | −0.22 [−0.28, −0.15] | 10.85 | 10.66 | .535/.526, .812/.812, .908/.909 ✓ |
+
+- Intervals are calibrated for every model (all ✓). Normal spreads fail the PIT shape test (χ² ≈ 26–50:
+  key numbers), empirical spreads pass (χ² 4.9–9.0); CRPS is the same either way.
+- Points model vs Elo on margin: −0.025 CRPS [−0.053, +0.004], not clearly better.
+- Implied P(home win) from the margin distribution: Brier 0.2192, consistent with `elo_tuned` (0.2194).
+- The market is still more accurate: model MAE − market MAE = +0.22 [+0.14, +0.30] (margin) and
+  +0.20 [+0.13, +0.26] (total).
+
 ### Synthetic results (pipeline check only)
 Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449, default 0.2524, oracle
 0.2351. The holdout was viewed once before the K grid was widened (from the validation edge signal only).
@@ -115,7 +140,7 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Not built / not verified
 - No live forecast has been scored yet (all 18 games pending).
-- No injury, QB, roster or weather-forecast features; no score/margin/total or player-stat distributions.
+- No weather-forecast features; no player-stat distributions; margin/total forecasts are not yet live.
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
 - Local git repository only (branch `main`); no remote, no CI.
 
@@ -127,8 +152,9 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Next steps
 1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
-2. Neither team efficiency nor QB availability closed the market gap (≈ 0.007). Options: score-margin
-   and total distributions (Stage 2), or reveal the holdout to get an honest estimate for the frozen Elo.
+2. Neither team efficiency nor QB availability closed the market gap (≈ 0.007). Stage 2 margin/total
+   distributions are built and calibrated. Options: player stat distributions (passing/rushing/receiving),
+   adding margin/total forecasts to the live ledger, or revealing the holdout for an honest estimate.
 3. Score-margin and total distributions with interval-coverage tests.
 4. Optional: remote repository and CI running pytest.
 
@@ -140,4 +166,5 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-18: `sfi forecast` / `sfi score` for prospective forecasts with freshness gates and a ledger.
 - 2026-10-18 `80a216a`: play-by-play team features evaluated on validation; no gain over Elo.
 - 2026-10-18 `f90b007`: injuries / depth charts / QB starters evaluated for availability features.
-- 2026-10-18: `elo_qb` built and validated on 2010–2019; no gain over Elo; not promoted.
+- 2026-10-18 `44fb78c`: `elo_qb` built and validated on 2010–2019; no gain over Elo; not promoted.
+- 2026-10-18: Stage 2 margin/total distributions with coverage and PIT tests; validated on 2001–2019.

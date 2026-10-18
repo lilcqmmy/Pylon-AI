@@ -74,6 +74,7 @@ class Dataset:
     benchmarks: dict[str, dict[str, float]] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     manifest: dict = field(default_factory=dict)  # raw-snapshot manifest (real data only)
+    lines: dict = field(default_factory=dict)     # market spread/total lines (benchmark only)
 
     def games_through(self, last_season: int) -> list[Game]:
         """Games up to and including `last_season`; later seasons are never loaded into a run."""
@@ -107,7 +108,7 @@ def load_dataset(cfg: dict, name: str) -> Dataset:
                    f"Known-at policy: result known {dcfg['known_at_hours']}h after kickoff; "
                    f"{len(snap.repairs)} documented kickoff-time repairs applied",
                    m["attribution"]],
-            manifest=m,
+            manifest=m, lines=snap.lines or {},
         )
     else:
         raise DatasetError(f"no loader for dataset {name!r}")

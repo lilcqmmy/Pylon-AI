@@ -60,6 +60,17 @@ features:
     min_samples: 200
     missing_timestamp_hours: 24 # injury row known this long before kickoff when date_modified is missing
 
+scores:                         # `sfi backtest-scores`: margin and total distributions
+  residual_window: 2000         # past residuals used for the spread
+  min_samples: 200              # default Normal(sd 13.5) until this many residuals exist
+  points:                       # PointsModel settings (untuned starting values)
+    k: 0.06
+    k_league: 0.005
+    k_home: 0.003
+    season_regression: 0.4
+    init_league: 20.5
+    init_home: 2.5
+
 calibration:                    # Platt scaling refit walk-forward on past issued forecasts only
   method: platt
   min_samples: 200              # identity mapping until this many past (non-tie) forecasts exist
@@ -89,6 +100,7 @@ storage:
   prospective_ledger: ledger/prospective_forecasts.jsonl  # live pre-game forecasts (tracked in git)
   forecast_run_log: ledger/forecast_runs.jsonl            # one entry per `sfi forecast` run
   backtest_archive: archive/backtest_forecasts.jsonl      # walk-forward replays (git-ignored)
+  score_archive: archive/score_forecasts.jsonl           # margin/total walk-forward replays
   holdout_reveal_log: archive/holdout_reveals.jsonl
   immutable_forecasts: true
 

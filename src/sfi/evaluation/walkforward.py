@@ -71,11 +71,15 @@ class Replay:
         if set_as_of is not None:
             set_as_of(as_of)
 
-    def forecast(self, game: Game, gate: GateConfig = GateConfig(), with_inputs: bool = True) -> Forecast:
+    def prepare(self, game: Game) -> None:
+        """Checks the forecast is pre-kickoff and moves the model into the game's season."""
         if self.as_of is None or self.as_of >= game.scheduled_start_utc:
             raise ValueError(f"{game.game_id}: forecast must be issued before kickoff")
         if getattr(self.model, "season", None) != game.season:
             self.model.start_season(game.season)
+
+    def forecast(self, game: Game, gate: GateConfig = GateConfig(), with_inputs: bool = True) -> Forecast:
+        self.prepare(game)
         p = self.model.predict_home_win(game)
         return Forecast(game, self.as_of, p, quality_gate(self.model, game, gate),
                         self.model.inputs_for(game) if with_inputs else {})

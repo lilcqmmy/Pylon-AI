@@ -118,6 +118,7 @@ class Snapshot:
     market_p_home: dict[str, float]  # de-vigged moneyline probability; benchmark only, never a feature
     manifest: dict
     repairs: list[str]  # documented corrections applied to upstream values
+    lines: dict[str, dict] = None  # {game_id: {"spread": home-favored points, "total": points}}; benchmark only
 
     @property
     def snapshot_id(self) -> str:
@@ -233,4 +234,23 @@ def load_snapshot(folder: Path, *, min_season: int, known_at_hours: float) -> Sn
     with open(path, newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     games, market, repairs = normalize_rows(rows, min_season=min_season, known_at_hours=known_at_hours)
-    return Snapshot(games, market, manifest, repairs)
+    return Snapshot(games, market, manifest, repairs, market_lines(rows, min_season))
+
+
+def market_lines(rows: list[dict[str, str]], min_season: int) -> dict[str, dict]:
+    """Closing-ish spread and total lines (recording time undocumented). Benchmark only, never a feature."""
+    out = {}
+    for r in rows:
+        if int(r["season"]) < min_season:
+            continue
+        ln = {}
+        for key, col in (("spread", "spread_line"), ("total", "total_line")):
+            v = r.get(col, "NA")
+            if v not in NA:
+                try:
+                    ln[key] = float(v)
+                except ValueError:
+                    pass
+        if ln:
+            out[r["game_id"]] = ln
+    return out

@@ -8,6 +8,8 @@
                                   --reveal-holdout is given (each reveal is logged)
   sfi forecast [--dry-run]        forecast upcoming real games and append them to the ledger
   sfi score                       score ledger forecasts once results are in a newer snapshot
+  sfi backtest-scores [--dataset NAME] [--reveal-holdout]
+                                  walk-forward score-margin and game-total distributions
 """
 
 from __future__ import annotations
@@ -291,6 +293,117 @@ def cmd_backtest(cfg: dict, args) -> int:
     return 0
 
 
+def cmd_backtest_scores(cfg: dict, args) -> int:
+    from sfi.evaluation import scores_eval as SE
+    from sfi.models.scores import EloScores, NaiveScores, PointsModel, PointsParams
+
+    ds = load_dataset(cfg, args.dataset)
+    val, hold = ds.splits.validation, ds.splits.holdout
+    loaded = load_tuned(cfg, ds)
+    if loaded is None:
+        return 1
+    tuned_params, tuned = loaded
+    if tuned["snapshot_id"] != ds.snapshot_id:
+        print("Tuned Elo was fit on a different data snapshot; re-run `sfi tune` before backtesting.", file=sys.stderr)
+        return 1
+    sc = cfg["scores"]
+    pp = PointsParams(**sc["points"])
+    lead = timedelta(hours=cfg["forecast"]["as_of_lead_hours"])
+    last = max(hold) if args.reveal_holdout else max(val)
+    games = ds.games_through(last)
+    factories = [
+        lambda: NaiveScores(),
+        lambda: EloScores(tuned_params, residual_method="normal", window=sc["residual_window"], min_samples=sc["min_samples"]),
+        lambda: EloScores(tuned_params, residual_method="empirical", window=sc["residual_window"], min_samples=sc["min_samples"]),
+        lambda: PointsModel(pp, residual_method="normal", window=sc["residual_window"], min_samples=sc["min_samples"]),
+        lambda: PointsModel(pp, residual_method="empirical", window=sc["residual_window"], min_samples=sc["min_samples"]),
+    ]
+    forecasts, records = [], []
+    for factory in factories:
+        model = factory()
+        for fc in SE.iter_score_walkforward(games, model, as_of_lead=lead):
+            forecasts.append((model.name, fc))
+            records.append(SE.make_score_record(fc, model, source_snapshot_id=ds.snapshot_id, data_kind=ds.data_kind))
+    archive = ForecastArchive(PROJECT_ROOT / cfg["storage"]["score_archive"])
+    written, same = archive.append(records)
+    print(f"Archive: {written} new records, {same} identical re-runs ({len(archive)} total)")
+    if args.reveal_holdout:
+        log = PROJECT_ROOT / cfg["storage"]["holdout_reveal_log"]
+        with open(log, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps({"revealed_at_utc": _now(), "dataset": ds.name, "snapshot_id": ds.snapshot_id,
+                                 "holdout_seasons": sorted(hold), "kind": "scores",
+                                 "models": sorted({f"{r.model_name}@{r.model_version}" for r in records})}) + "\n")
+        print(f"Holdout revealed; logged to {log.relative_to(PROJECT_ROOT)}")
+
+    n_boot = cfg["validation"]["bootstrap_samples"]
+    by_id = {g.game_id: g for g in games}
+    splits = [("validation", set(val), f"Validation {min(val)}–{max(val)}",
+               "Elo parameters were selected on these seasons; points-model and spread settings are untuned defaults.")]
+    if args.reveal_holdout:
+        splits.append(("holdout", set(hold), f"Holdout {min(hold)}–{max(hold)}", "Never used for any design choice."))
+    sections, results = [], {}
+    for key, seasons, title, note in splits:
+        sections.append([f"## {title}", ""])
+        for target in ("margin", "total"):
+            evals = SE.evaluate(forecasts, target, seasons)
+            summary = SE.summarize_target(evals, n_boot)
+            market = SE.market_point_eval(target, ds.lines, by_id, seasons) if ds.lines else None
+            mname = market.model if market is not None else None
+            best = ["scores_points_empirical", "scores_points_normal"] if target == "total" else \
+                   ["scores_elo_normal", "scores_points_empirical"]
+            comparisons = [(m, "scores_naive") for m in best] + [
+                ("scores_points_empirical", "scores_points_normal"), ("scores_elo_empirical", "scores_elo_normal")]
+            if target == "margin":
+                comparisons.append(("scores_points_empirical", "scores_elo_normal"))
+            if mname:
+                comparisons += [(m, mname) for m in best]
+            results[f"{key}_{target}"] = summary
+            sections.append(SE.section_lines(target, title, "" if target == "total" else note, evals, summary,
+                                             market, comparisons, n_boot))
+            # implied win probability from the margin distribution, for consistency with the win models
+            if target == "margin":
+                rows = ["Implied P(home win) from the margin distribution (Brier, non-tied games):", ""]
+                for name in summary:
+                    ps, ys = [], []
+                    for nm, fc in forecasts:
+                        g = fc.game
+                        if nm == name and g.season in seasons and g.is_final and g.home_outcome != 0.5:
+                            ps.append(SE.implied_p_home(fc.margin))
+                            ys.append(g.home_outcome)
+                    from sfi.evaluation.metrics import brier
+                    rows.append(f"- `{name}`: {brier(ps, ys):.4f} (n = {len(ys)})")
+                sections.append(rows + [""])
+    if not args.reveal_holdout:
+        sections.append([f"## Holdout {min(hold)}–{max(hold)}", "", "**Sealed.** Not loaded or evaluated.", ""])
+
+    stem = f"{ds.name}_scores_backtest"
+    (PROJECT_ROOT / "reports").mkdir(exist_ok=True)
+    (PROJECT_ROOT / "reports" / f"{stem}.json").write_text(json.dumps(
+        {"dataset": ds.name, "snapshot_id": ds.snapshot_id, "holdout_revealed": args.reveal_holdout,
+         "points_params": asdict(pp), "results": results}, indent=2), encoding="utf-8")
+    write_markdown(
+        PROJECT_ROOT / "reports" / f"{stem}.md", title=f"Margin and total distributions: {ds.name}",
+        data_kind=ds.data_kind, benchmarks=[],
+        header=[f"Data snapshot: `{ds.snapshot_id}`", *ds.notes,
+                f"Each kickoff slate forecast {cfg['forecast']['as_of_lead_hours']}h before kickoff using only results known by then.",
+                "`scores_naive`: past margins (last 2,000 games) and totals (last 512 games), no game information.",
+                f"`scores_elo_*`: margin mean = OLS on tuned-Elo points edge, refit each season; total mean = last 512 games.",
+                f"`scores_points_*`: team offense/defense scoring ratings {asdict(pp)} (untuned).",
+                f"`*_normal`: discretized Normal with sd of the last {sc['residual_window']} residuals; `*_empirical`: "
+                "shape of those residuals (keeps key-number mass). Spreads use the model's own past forecasts only.",
+                "Market spread/total lines are point benchmarks only (recording time undocumented, likely near kickoff)."],
+        sections=sections,
+    )
+    for k, summ in results.items():
+        print(f"[{k}]")
+        for name, s in summ.items():
+            cov = " ".join(f"{lv}:{s['coverage'][str(lv)]['observed']:.3f}/{s['coverage'][str(lv)]['claimed']:.3f}"
+                           for lv in SE.LEVELS)
+            print(f"  {name:24s} n={s['n']:5d} CRPS={s['crps']:.3f} MAE={s['mae_median']:.2f} cov {cov} PITchi2={s['pit_chi2']:.1f}")
+    print(f"Report: reports/{stem}.md")
+    return 0
+
+
 def _live_dataset(cfg: dict):
     ds = load_dataset(cfg, cfg["live"]["dataset"])
     if ds.data_kind != "real":
@@ -421,9 +534,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("forecast", help="forecast upcoming games and archive them (real data)")
     p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
     sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")
-    for name in ("tune", "backtest"):
+    for name in ("tune", "backtest", "backtest-scores"):
         p = sub.add_parser(name)
         p.add_argument("--dataset", help="dataset name from config (default: config `dataset`)")
+        if name == "backtest-scores":
+            p.add_argument("--reveal-holdout", action="store_true", help="also evaluate the sealed holdout (logged)")
         if name == "backtest":
             p.add_argument("--reveal-holdout", action="store_true",
                            help="also evaluate the sealed holdout seasons (logged)")
@@ -431,10 +546,10 @@ def main(argv: list[str] | None = None) -> int:
                            help="also evaluate feature models: pbp (team play-by-play), qb (QB availability)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
-    if getattr(args, "dataset", None) is None and args.cmd in ("tune", "backtest"):
+    if getattr(args, "dataset", None) is None and args.cmd in ("tune", "backtest", "backtest-scores"):
         args.dataset = cfg["dataset"]
     handlers = {"synth": cmd_synth, "fetch": cmd_fetch, "tune": cmd_tune, "backtest": cmd_backtest,
-                "forecast": cmd_forecast, "score": cmd_score}
+                "forecast": cmd_forecast, "score": cmd_score, "backtest-scores": cmd_backtest_scores}
     try:
         return handlers[args.cmd](cfg, args)
     except DatasetError as e:

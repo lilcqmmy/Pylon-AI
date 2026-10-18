@@ -142,3 +142,12 @@ def test_load_snapshot_rejects_tampered_file(tmp_path):
     (folder / "games.csv").write_bytes(b"tampered\n")
     with pytest.raises(ValidationError, match="checksum"):
         N.load_snapshot(folder, min_season=2000, known_at_hours=5)
+
+
+def test_market_lines_are_parsed_separately_from_games():
+    r = row("2015_01_A", 2015, 1, "2015-09-13", "13:00", "NYJ", "NE", "10", "20")
+    r.update(spread_line="6.5", total_line="44.5")
+    old = row("1999_01_B", 1999, 1, "1999-09-12", "NA", "MIN", "ATL", "17", "14")
+    old.update(spread_line="3", total_line="40")
+    missing = row("2015_01_C", 2015, 1, "2015-09-13", "16:25", "DAL", "NYG", "27", "26")
+    assert N.market_lines([r, old, missing], min_season=2000) == {"2015_01_A": {"spread": 6.5, "total": 44.5}}
