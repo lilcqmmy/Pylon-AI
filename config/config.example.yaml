@@ -87,6 +87,7 @@ forecast:
 live:                           # `sfi forecast` / `sfi score` (prospective, real data only)
   dataset: nflverse
   primary_model: elo_tuned      # headline model in printed output; all live models are archived
+  primary_score_model: scores_points_empirical  # margin/total columns in printed output
   horizon_days: 8               # forecast unplayed games kicking off within this window
   min_lead_minutes: 10          # never forecast a game closer than this to kickoff
   max_snapshot_age_hours: 24    # refuse to forecast from an older snapshot (run `sfi fetch`)

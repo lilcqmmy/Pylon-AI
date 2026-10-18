@@ -45,10 +45,12 @@ Prospective (live) forecasts for upcoming real games:
 .\.venv\Scripts\sfi.exe score                # after a later fetch: score forecasts whose games are final
 ```
 
-`forecast` uses the frozen tuned Elo, replays all history up to now, and archives each forecast with
+`forecast` uses the frozen tuned Elo (win probability) and the team points model (score-margin and
+game-total distributions, full pmf stored), replays all history up to now, and archives each forecast with
 its run (snapshot, code commit, tuned-parameter hash, market line at issue time as a benchmark). It
 refuses to run if the snapshot is over 24h old or any game is missing a result that should be known.
-`score` uses the latest forecast issued before each game's actual kickoff. Commit `ledger/` after each
+`score` uses the latest forecast issued before each game's actual kickoff (Brier/log loss for win
+probability; CRPS, MAE and interval coverage for margin and total, vs market lines at issue). Commit `ledger/` after each
 run so git holds an outside record of when forecasts were made.
 
 `scripts\live_run.ps1` runs one full cycle (fetch → forecast → score → commit `ledger/`) and logs to

@@ -39,7 +39,24 @@ def iter_score_walkforward(games: list[Game], model, *, as_of_lead: timedelta = 
             yield ScoreForecast(g, replay.as_of, m, t, model.inputs_for(g))
 
 
-def make_score_record(f: ScoreForecast, model, *, source_snapshot_id: str, data_kind: str) -> ForecastRecord:
+def pmf_to_json(d: DiscreteDist, digits: int = 6) -> dict:
+    """Compact pmf: trimmed to the range with mass, rounded. Reload with `pmf_from_json`."""
+    p = np.round(d.pmf, digits)
+    nz = np.nonzero(p)[0]
+    if len(nz) == 0:
+        return {"lo": d.lo, "p": [1.0]}
+    a, b = int(nz[0]), int(nz[-1])
+    return {"lo": d.lo + a, "p": [float(x) for x in p[a:b + 1]]}
+
+
+def pmf_from_json(obj: dict) -> DiscreteDist:
+    return DiscreteDist(int(obj["lo"]), np.asarray(obj["p"], dtype=float))
+
+
+def make_score_record(f: ScoreForecast, model, *, source_snapshot_id: str, data_kind: str,
+                      include_pmf: bool = False) -> ForecastRecord:
+    """`include_pmf` stores the full distributions (used for live forecasts so they can be scored exactly
+    later); backtest archives keep quantile summaries only."""
     import hashlib
     from dataclasses import asdict
 
@@ -55,7 +72,8 @@ def make_score_record(f: ScoreForecast, model, *, source_snapshot_id: str, data_
         scheduled_start_utc=_iso(g.scheduled_start_utc), source_snapshot_id=source_snapshot_id,
         feature_spec_version=model.feature_spec_version, model_name=model.name, model_version=model.version,
         distribution={"margin": f.margin.summary(), "total": f.total.summary(),
-                      "p_home_win_implied": round(implied_p_home(f.margin), 6)},
+                      "p_home_win_implied": round(implied_p_home(f.margin), 6),
+                      **({"margin_pmf": pmf_to_json(f.margin), "total_pmf": pmf_to_json(f.total)} if include_pmf else {})},
         inputs=f.inputs, quality_gate=QualityGate("publish"), data_kind=data_kind,
         simulation_only=data_kind == "synthetic",
     )

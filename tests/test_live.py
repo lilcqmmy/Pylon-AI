@@ -119,3 +119,71 @@ def test_jsonl_round_trip(tmp_path):
     live.append_jsonl(p, [{"b": 2}])
     assert live.read_jsonl(p) == [{"a": 1}, {"b": 2}]
     assert live.read_jsonl(tmp_path / "missing.jsonl") == []
+
+
+# ---------------------------------------------------------------- margin/total in live runs
+import numpy as np  # noqa: E402
+
+from sfi.distributions import from_normal  # noqa: E402
+from sfi.evaluation import scores_eval as SE  # noqa: E402
+from sfi.models.scores import NaiveScores, PointsModel  # noqa: E402
+
+
+def test_pmf_json_round_trip_is_exact_enough():
+    d = from_normal(3.2, 13.0, -70, 70)
+    back = SE.pmf_from_json(SE.pmf_to_json(d))
+    assert back.quantile(0.1) == d.quantile(0.1) and abs(back.mean() - d.mean()) < 1e-3
+    assert abs(back.crps(7) - d.crps(7)) < 1e-3
+
+
+def test_live_score_forecast_equals_backtest_at_same_as_of():
+    gs = _season()
+    target = next(g for g in gs if g.game_id == "W1C")
+    now = target.scheduled_start_utc - timedelta(hours=1)
+    visible = [g if g.result_known_by(now) else replace(g, home_score=None, away_score=None, result_known_at_utc=None)
+               for g in gs]
+    [f] = live.score_forecast_now(visible, PointsModel(min_samples=1), now, [target], as_of_lead=timedelta(hours=1))
+    bt = {x.game.game_id: x for x in SE.iter_score_walkforward(gs, PointsModel(min_samples=1))}
+    assert f.as_of == bt["W1C"].as_of == now
+    assert np.allclose(f.margin.pmf, bt["W1C"].margin.pmf) and f.margin.lo == bt["W1C"].margin.lo
+    assert np.allclose(f.total.pmf, bt["W1C"].total.pmf)
+
+
+def test_build_run_adds_score_records_with_pmfs_and_lines():
+    gs = _season()
+    now = T0 + timedelta(days=13)
+    recs, run = live.build_run(
+        games=gs, factories=[EloModel], now=now, cfg=CFG, as_of_lead=timedelta(hours=1), gate=live.GateConfig(),
+        snapshot_id="sha256:abc", manifest={**MANIFEST, "retrieved_at_utc": live._iso(now)}, market={},
+        extra={}, score_factories=[NaiveScores, lambda: PointsModel(min_samples=1)],
+        lines={"W2A": {"spread": 3.5, "total": 44.0}})
+    score_recs = [r for r in recs if r.outcome_type == "home_margin_and_total"]
+    assert {r.model_name for r in score_recs} == {"scores_naive", "scores_points_empirical"}
+    assert all("margin_pmf" in r.distribution and "total_pmf" in r.distribution for r in score_recs)
+    assert run["market_lines_at_issue"] == {"W2A": {"spread": 3.5, "total": 44.0}}
+
+
+def test_ledger_scoring_separates_win_and_distribution_records():
+    g1 = make_game(gid="G1", home="A", away="B", start=T0, hs=27, as_=20)
+    g2 = make_game(gid="G2", home="C", away="D", start=T0 + timedelta(hours=3), hs=None, as_=None)
+    games = {"G1": g1, "G2": g2}
+    t_early, t_late = T0 - timedelta(hours=30), T0 - timedelta(hours=2)
+    d_old, d_new = from_normal(0.0, 13.0, -70, 70), from_normal(6.0, 13.0, -70, 70)
+    tot = from_normal(45.0, 13.0, 0, 120)
+
+    def srec(gid, t, d):
+        return {"game_id": gid, "model_name": "scores_points_empirical", "outcome_type": "home_margin_and_total",
+                "prediction_as_of_utc": live._iso(t), "quality_gate": {"status": "publish"},
+                "distribution": {"margin_pmf": SE.pmf_to_json(d), "total_pmf": SE.pmf_to_json(tot)}}
+
+    ledger = [_rec("G1", "elo_tuned", t_late, 0.6), srec("G1", t_early, d_old), srec("G1", t_late, d_new),
+              srec("G2", t_late, d_new)]
+    runs = [{"issued_at_utc": live._iso(t_late), "market_lines_at_issue": {"G1": {"spread": 4.0, "total": 47.0}}}]
+    win = live.score_ledger(ledger, games)
+    assert win.sets["elo_tuned"].p == [0.6]  # distribution records are ignored here
+    res = live.score_ledger_distributions(ledger, runs, games, {"G1": {"spread": 5.0, "total": 46.0}})
+    e = res.evals["margin"]["scores_points_empirical"]
+    assert e.game_ids == ["G1"] and e.crps[0] == pytest.approx(SE.pmf_from_json(SE.pmf_to_json(d_new)).crps(7), abs=1e-9)
+    assert res.pending == 1
+    assert res.market["margin"]["at_issue"].abs_err_median == [3.0]
+    assert res.market["total"]["snapshot"].abs_err_median == [1.0]

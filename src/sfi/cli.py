@@ -411,6 +411,20 @@ def _live_dataset(cfg: dict):
     return ds
 
 
+def _fmt_dist(d: dict | None, target: str) -> str:
+    if not d:
+        return "–"
+    s = d[target]
+    return f"{s['q50']:+d} [{s['q10']:+d}, {s['q90']:+d}]" if target == "margin" else f"{s['q50']} [{s['q10']}, {s['q90']}]"
+
+
+def _fmt_lines(ln: dict | None) -> str:
+    if not ln:
+        return "–"
+    sp, tot = ln.get("spread"), ln.get("total")
+    return f"{'' if sp is None else f'{sp:+g}'} / {'' if tot is None else f'{tot:g}'}"
+
+
 def cmd_forecast(cfg: dict, args) -> int:
     ds = _live_dataset(cfg)
     loaded = load_tuned(cfg, ds)
@@ -424,6 +438,13 @@ def cmd_forecast(cfg: dict, args) -> int:
     now = datetime.now(timezone.utc).replace(microsecond=0)
     commit, dirty = live.git_state(PROJECT_ROOT)
     manifest = ds.manifest
+    from sfi.models.scores import NaiveScores, PointsModel, PointsParams
+    sc = cfg["scores"]
+    pp = PointsParams(**sc["points"])
+    score_factories = [
+        lambda: NaiveScores(),
+        lambda: PointsModel(pp, residual_method="empirical", window=sc["residual_window"], min_samples=sc["min_samples"]),
+    ]
     try:
         records, run = live.build_run(
             games=ds.games, factories=[HomeRate, *elo_factories(cfg, tuned_params)], now=now, cfg=live_cfg,
@@ -433,7 +454,8 @@ def cmd_forecast(cfg: dict, args) -> int:
             extra={"dataset": ds.name, "code_commit": commit, "code_dirty": dirty,
                    "tuned_artifact_sha256": file_sha256(tuned_path(cfg, ds.name)),
                    "tuned_params": tuned["best"]["params"], "primary_model": lv["primary_model"],
-                   "dry_run": args.dry_run},
+                   "dry_run": args.dry_run, "primary_score_model": lv["primary_score_model"]},
+            score_factories=score_factories, lines=ds.lines,
         )
     except live.StaleDataError as e:
         print(f"Refusing to forecast on stale data: {e}\nRun `sfi fetch` first.", file=sys.stderr)
@@ -444,23 +466,30 @@ def cmd_forecast(cfg: dict, args) -> int:
         return 0
 
     by_game: dict[str, dict[str, float]] = {}
+    dist: dict[str, dict] = {}
     for r in records:
-        by_game.setdefault(r.game_id, {})[r.model_name] = r.distribution["p_home_win"]
+        if r.outcome_type == "home_win_excl_tie":
+            by_game.setdefault(r.game_id, {})[r.model_name] = r.distribution["p_home_win"]
+        elif r.model_name == lv["primary_score_model"]:
+            dist[r.game_id] = r.distribution
     games = {g.game_id: g for g in ds.games}
     market = run["market_p_home_at_issue"]
     eastern = nflverse.EASTERN
     lines = [f"Issued {run['issued_at_utc']} from snapshot {ds.snapshot_id} "
              f"(retrieved {manifest['retrieved_at_utc']}); code {commit[:7] if commit else '?'}"
              f"{' (uncommitted changes)' if dirty else ''}", "",
-             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) home_rate | Market (benchmark) |",
-             "|---|---|---:|---:|---:|---:|"]
+             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) home_rate | Market (benchmark) "
+             f"| Margin median [80%] | Total median [80%] | Market spread / total |",
+             "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+    mlines = run.get("market_lines_at_issue", {})
     for gid in run["game_ids"]:
         g, p = games[gid], by_game[gid]
         mk = f"{market[gid]:.3f}" if gid in market else "–"
         site = " (neutral)" if g.neutral_site else ""
         lines.append(f"| {g.scheduled_start_utc.astimezone(eastern):%a %b %d %H:%M} | {g.away_team} @ {g.home_team}{site} | "
                      f"{p.get(lv['primary_model'], float('nan')):.3f} | {p.get('elo_tuned_platt', float('nan')):.3f} | "
-                     f"{p.get('home_rate', float('nan')):.3f} | {mk} |")
+                     f"{p.get('home_rate', float('nan')):.3f} | {mk} | {_fmt_dist(dist.get(gid), 'margin')} | "
+                     f"{_fmt_dist(dist.get(gid), 'total')} | {_fmt_lines(mlines.get(gid))} |")
     print("\n".join(lines))
     if args.dry_run:
         print("\nDry run: nothing archived.")
@@ -475,7 +504,8 @@ def cmd_forecast(cfg: dict, args) -> int:
     report.parent.mkdir(exist_ok=True)
     report.write_text("# Upcoming forecasts (prospective, real NFL)\n\n"
                       "> Issued before kickoff and archived in the ledger. Probabilities are model estimates, "
-                      "not guarantees. Market column is a benchmark only, never a model input.\n\n"
+                      "not guarantees. Market columns are benchmarks only, never model inputs. Margin is home "
+                      "minus away points; 80% = central interval of the predictive distribution.\n\n"
                       + "\n".join(lines) + f"\n\n{nflverse.ATTRIBUTION}\n", encoding="utf-8")
     print(f"\nArchived {len(records)} forecasts for {len(run['game_ids'])} games (run {run['run_id']}) "
           f"to {cfg['storage']['prospective_ledger']}. Commit the ledger to keep an external timestamp.")
@@ -505,18 +535,46 @@ def cmd_score(cfg: dict, args) -> int:
     section = section_lines("Prospective forecasts", note, res.sets, summary, comparisons=comparisons,
                             reliability=["elo_tuned"] if n >= 100 else [],
                             n_boot=v["bootstrap_samples"], n_bins=v["calibration_bins"])
+
+    from sfi.evaluation import scores_eval as SE
+    dres = live.score_ledger_distributions(ledger, runs, games, ds.lines)
+    dist_sections, dist_counts = [["## Margin and total distributions", ""]], {}
+    for target in ("margin", "total"):
+        evals = dres.evals[target]
+        if not evals:
+            continue
+        dsum = SE.summarize_target(evals, v["bootstrap_samples"])
+        nd = max(s["n"] for s in dsum.values())
+        dist_counts[target] = {k: s for k, s in dsum.items()}
+        dnote = (f"Latest pre-kickoff forecast per model and game, scored exactly from the archived pmf. "
+                 f"{dres.pending} game(s) pending; excluded {dres.excluded}.")
+        if nd < 100:
+            dnote += f" **Only {nd} scored games: far too few to judge accuracy or coverage.**"
+        mk = dres.market[target]
+        key = "spread" if target == "margin" else "total"
+        cmp_ = [("scores_points_empirical", "scores_naive"),
+                ("scores_points_empirical", f"market_{key}_at_issue")]
+        lines_ = SE.section_lines(target, "Prospective", dnote, {**evals, mk["at_issue"].model: mk["at_issue"]},
+                                  dsum, mk["snapshot"], cmp_, v["bootstrap_samples"])
+        dist_sections.append(lines_)
     out = PROJECT_ROOT / "reports" / "prospective_scores.md"
     write_markdown(out, title="Prospective scoring (real NFL, issued before kickoff)", data_kind="real",
                    benchmarks=["market_moneyline"],
                    header=[f"Scored against snapshot `{ds.snapshot_id}` ({ds.notes[0]})",
                            f"Ledger: {len(ledger)} forecast records from {len(runs)} run(s)",
                            "`market_at_issue`: market line recorded when our forecast was issued; "
-                           "`market_moneyline`: line in the scoring snapshot (likely closing)."],
-                   sections=[section])
+                           "`market_moneyline`: line in the scoring snapshot (likely closing). Market spread/total "
+                           "lines are point benchmarks (`*_at_issue`: recorded with our forecast; `*_snapshot`: "
+                           "scoring snapshot)."],
+                   sections=[section, *dist_sections])
     for name, s in summary.items():
         if s.get("n_scored"):
             print(f"  {name:18s} n={s['n_scored']:4d}  Brier={s['brier']:.4f}  LogLoss={s['log_loss']:.4f}")
     print(f"{res.pending} game(s) pending; excluded {res.excluded}")
+    for target, dsum in dist_counts.items():
+        for name, s in dsum.items():
+            print(f"  [{target}] {name:24s} n={s['n']:4d}  CRPS={s['crps']:.3f}  MAE={s['mae_median']:.2f}")
+    print(f"Margin/total: {dres.pending} game(s) pending")
     print("Report: reports/prospective_scores.md")
     return 0
 

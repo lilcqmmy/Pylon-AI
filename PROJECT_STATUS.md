@@ -130,6 +130,10 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - `sfi score`: latest pre-kickoff forecast per model and game; excludes forecasts issued after the
   actual kickoff; compares with the market at issue time and the snapshot's (likely closing) line.
 - A test confirms a live forecast equals the backtest forecast for the same game and as-of time.
+- **Margin/total live (2026-10-18):** each run also archives `scores_points_empirical` (primary) and
+  `scores_naive` margin/total distributions with their full pmfs, and records the market spread/total
+  at issue time (benchmark). `sfi score` scores them exactly (CRPS, MAE, coverage, PIT) against market
+  lines at issue and in the scoring snapshot. A test confirms live = backtest distributions at the same as-of.
 - **Automated (2026-10-18):** `scripts/live_run.ps1` (fetch → forecast → score → commit `ledger/`),
   run by Claude desktop scheduled tasks `nfl-live-forecast-weekday` (Mon and Thu 3:00 PM ET) and
   `nfl-live-forecast-sunday` (Sun 8:30 AM ET) and `nfl-live-forecast-sunday-evening` (Sun 6:30 PM ET),
@@ -140,7 +144,7 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Not built / not verified
 - No live forecast has been scored yet (all 18 games pending).
-- No weather-forecast features; no player-stat distributions; margin/total forecasts are not yet live.
+- No weather-forecast features; no player-stat distributions.
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
 - Local git repository only (branch `main`); no remote, no CI.
 
@@ -152,9 +156,9 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Next steps
 1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
-2. Neither team efficiency nor QB availability closed the market gap (≈ 0.007). Stage 2 margin/total
-   distributions are built and calibrated. Options: player stat distributions (passing/rushing/receiving),
-   adding margin/total forecasts to the live ledger, or revealing the holdout for an honest estimate.
+2. Neither team efficiency nor QB availability closed the market gap (≈ 0.007). Margin/total
+   distributions are built, calibrated and live. Options: player stat distributions (passing/rushing/
+   receiving), or revealing the holdout for an honest estimate of the frozen models.
 3. Score-margin and total distributions with interval-coverage tests.
 4. Optional: remote repository and CI running pytest.
 
@@ -167,4 +171,5 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-18 `80a216a`: play-by-play team features evaluated on validation; no gain over Elo.
 - 2026-10-18 `f90b007`: injuries / depth charts / QB starters evaluated for availability features.
 - 2026-10-18 `44fb78c`: `elo_qb` built and validated on 2010–2019; no gain over Elo; not promoted.
-- 2026-10-18: Stage 2 margin/total distributions with coverage and PIT tests; validated on 2001–2019.
+- 2026-10-18 `4e87267`: Stage 2 margin/total distributions with coverage and PIT tests; validated on 2001–2019.
+- 2026-10-18: margin/total distributions added to live forecasts and scoring.
