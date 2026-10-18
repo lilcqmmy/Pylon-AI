@@ -86,3 +86,25 @@ Worth building, with modest expectations, as a **QB-availability adjustment** on
 
 Expected gain if it works: ≲ 0.0015 Brier. Remaining market gap after that would still be ≈ 0.005, likely
 from information not in these feeds (late news, weather forecasts, line movement).
+
+## Result: `elo_qb` built and validated (2026-10-18)
+
+Implemented as `src/sfi/models/qb_adjust.py` (inputs: `src/sfi/features/qb.py`), run with
+`sfi backtest --dataset nflverse --features qb`. Holdout 2020–2025 stays sealed.
+
+| Validation 2010–2019 (2,662 games) | Brier | Log loss | Calib. slope |
+|---|---:|---:|---:|
+| elo_tuned | 0.2190 | 0.6272 | 1.09 |
+| elo_qb | 0.2188 | 0.6267 | 1.03 |
+| market (benchmark, 2,661 games) | 0.2118 | 0.6113 | – |
+
+- **elo_qb − elo_tuned: −0.0002 Brier, 95% CI [−0.0012, +0.0007]: no clear difference.**
+- By game type: previous starter Out/Doubtful (131 games) **−0.0041**; Questionable (138) +0.0015;
+  no QB flag (2,393) −0.0001. The adjustment helps where a starter is actually out, but those games
+  are too rare to move the overall score, and Questionable listings add noise.
+- Development note: the first run standardized the rare 0/1 flags, so a single flagged training game
+  in 2009–2010 became a z-value of ~14 and produced −0.3 to −0.4 probability swings (Brier +0.0013 vs
+  Elo). Flags are now left unscaled under the ridge penalty (model version 0.2.0). This fix was made
+  after seeing validation results; the holdout was not touched.
+
+**Decision: not promoted to live forecasts.** Gap to the market is unchanged (≈ 0.007).

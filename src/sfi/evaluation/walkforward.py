@@ -66,6 +66,10 @@ class Replay:
             if g.season != getattr(self.model, "season", None):
                 self.model.start_season(g.season)
             self.model.observe(g)
+        # Models that read time-stamped pregame information (e.g. injury reports) need the clock.
+        set_as_of = getattr(self.model, "set_as_of", None)
+        if set_as_of is not None:
+            set_as_of(as_of)
 
     def forecast(self, game: Game, gate: GateConfig = GateConfig(), with_inputs: bool = True) -> Forecast:
         if self.as_of is None or self.as_of >= game.scheduled_start_utc:

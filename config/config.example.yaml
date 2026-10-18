@@ -53,6 +53,12 @@ features:
   pbp:                          # `sfi backtest --dataset nflverse --features pbp`
     l2: 10.0                    # ridge penalty on standardized features; fixed, not tuned
     min_samples: 200            # use Elo alone until this many past (non-tie) games are available
+  qb:                           # `sfi backtest --dataset nflverse --features qb`
+    k_prior: 300                # QB rating shrinkage: dropbacks of prior at prior_mean (untuned)
+    prior_mean: 0.0             # qb_epa per dropback assumed for an unknown QB
+    l2: 10.0                    # ridge penalty on standardized features; fixed, not tuned
+    min_samples: 200
+    missing_timestamp_hours: 24 # injury row known this long before kickoff when date_modified is missing
 
 calibration:                    # Platt scaling refit walk-forward on past issued forecasts only
   method: platt

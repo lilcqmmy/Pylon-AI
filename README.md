@@ -26,6 +26,8 @@ python -m venv .venv
 # Play-by-play team features (experimental; not used live)
 .\.venv\Scripts\sfi.exe fetch --pbp 2000-2026          # ~480 MB first time; later only changed seasons
 .\.venv\Scripts\sfi.exe backtest --dataset nflverse --features pbp   # reports/nflverse_pbp_backtest.md
+.\.venv\Scripts\sfi.exe fetch --injuries 2009-2026 --depth-charts 2001-2026
+.\.venv\Scripts\sfi.exe backtest --dataset nflverse --features qb    # reports/nflverse_qb_backtest.md
 
 # Synthetic test league
 .\.venv\Scripts\sfi.exe synth
@@ -71,6 +73,8 @@ src/sfi/
   data/sources/nflverse_pbp.py  Per-season play-by-play snapshots; skips unchanged upstream files
   features/pbp.py           Team-game offense/defense aggregates; point-in-time rolling/season features
   models/pbp_logit.py       Elo + play-by-play features, ridge logistic refit each season (walk-forward)
+  features/qb.py            QB game stats, starters, injury rows with explicit known-at times
+  models/qb_adjust.py       Elo + QB availability (expected starter at as-of), ridge logistic walk-forward
   models/base.py            WinModel interface (observe / predict / inputs)
   models/elo.py             Elo: home field (off at neutral sites), margin of victory, season regression,
                             ratings keyed by franchise

@@ -150,11 +150,12 @@ def cmd_backtest(cfg: dict, args) -> int:
 
     factories = [CoinFlip, HomeRate, lambda: EloModel(default, name="elo_default"),
                  *elo_factories(cfg, tuned_params)]
-    feature_note = None
-    if args.features == "pbp":
-        if ds.name != "nflverse":
-            print("--features pbp requires --dataset nflverse", file=sys.stderr)
-            return 1
+    feats = args.features or []
+    feature_notes: list[str] = []
+    if feats and ds.name != "nflverse":
+        print("--features requires --dataset nflverse", file=sys.stderr)
+        return 1
+    if "pbp" in feats:
         from sfi.data.sources import nflverse_pbp
         from sfi.features.pbp import load_team_games
         from sfi.models.pbp_logit import PbpLogit
@@ -170,9 +171,36 @@ def cmd_backtest(cfg: dict, args) -> int:
             lambda: PbpLogit(tuned_params, stats, l2=pf["l2"], min_samples=pf["min_samples"],
                              name="pbp_logit_full", data_tag=pbp_id),
         ]
-        feature_note = (f"Play-by-play features: seasons {seasons[0]}–{seasons[-1]}, snapshot `{pbp_id}`, "
+        feature_notes.append(f"Play-by-play features: seasons {seasons[0]}–{seasons[-1]}, snapshot `{pbp_id}`, "
                         f"L2 {pf['l2']} (untuned), refit each season start, min {pf['min_samples']} samples. "
                         f"{nflverse_pbp.EPA_CAVEAT}")
+        feature_notes.append("`pbp_logit_epa`: Elo logit + offense/defense EPA per play (4-game rolling and "
+                             "season-to-date, home minus away). `pbp_logit_full`: Elo logit + all 8 metrics × "
+                             "offense/defense × 2 windows (32 differences).")
+    if "qb" in feats:
+        from sfi.data.sources import nflverse, nflverse_pbp
+        from sfi.features.qb import load_injuries, load_qb_games, load_starters
+        from sfi.models.qb_adjust import QbAdjusted
+        nv, qf = cfg["datasets"]["nflverse"], cfg["features"]["qb"]
+        seasons = sorted({g.season for g in games})  # never beyond the last evaluated season
+        pbp_files = nflverse_pbp.latest_files(PROJECT_ROOT / nv["pbp_dir"], seasons)
+        inj_seasons = [s for s in seasons if s >= 2009]
+        inj_files = nflverse_pbp.latest_release_files(nflverse_pbp.INJURIES, PROJECT_ROOT / nv["injuries_dir"], inj_seasons)
+        qb_games = load_qb_games(pbp_files, PROJECT_ROOT / "data" / "derived" / "pbp")
+        starters = load_starters(nflverse.latest_snapshot(PROJECT_ROOT / nv["raw_dir"]) / "games.csv", games)
+        inj = load_injuries(inj_files, games, missing_hours=qf["missing_timestamp_hours"])
+        qb_tag = (nflverse_pbp.combined_snapshot_id([m for _, m in pbp_files.values()]) + "|"
+                  + nflverse_pbp.combined_snapshot_id([m for _, m in inj_files.values()]))
+        factories.append(lambda: QbAdjusted(tuned_params, qb_games, starters, inj.rows, k_prior=qf["k_prior"],
+                                            prior_mean=qf["prior_mean"], l2=qf["l2"], min_samples=qf["min_samples"],
+                                            name="elo_qb", data_tag=qb_tag))
+        feature_notes.append(
+            f"`elo_qb`: Elo logit + QB availability (expected vs previous starter rating, Out/Doubtful and "
+            f"Questionable flags), ridge L2 {qf['l2']} refit each season; QB rating = prior qb_epa/dropback shrunk "
+            f"to {qf['prior_mean']} with {qf['k_prior']:g} dropbacks (untuned). Injury rows (QBs, {inj_seasons[0]}–"
+            f"{inj_seasons[-1]}): {sum(len(v) for v in inj.rows.values())} used, {inj.policy_rows} with policy "
+            f"timestamp (kickoff − {qf['missing_timestamp_hours']:g}h), {inj.dropped_after_kickoff} dropped "
+            f"(modified after kickoff), {inj.unmatched} unmatched. Injury data starts 2009, so compare on 2010–2019.")
     records = run_walkforward(games, factories, source_snapshot_id=ds.snapshot_id,
                               data_kind=ds.data_kind, gate=gate, as_of_lead=lead)
     archive = ForecastArchive(PROJECT_ROOT / cfg["storage"]["backtest_archive"])
@@ -194,12 +222,20 @@ def cmd_backtest(cfg: dict, args) -> int:
     bench = list(ds.benchmarks)
     comparisons = [("elo_tuned", "elo_default"), ("elo_tuned_platt", "elo_tuned"), ("elo_tuned", "home_rate")]
     comparisons += [(m, b) for b in bench for m in ("elo_tuned", "elo_tuned_platt")]
-    if feature_note:
+    if "pbp" in feats:
         comparisons += [("pbp_logit_epa", "elo_tuned"), ("pbp_logit_full", "elo_tuned"),
                         ("pbp_logit_full", "pbp_logit_epa")]
         comparisons += [(m, b) for b in bench for m in ("pbp_logit_epa", "pbp_logit_full")]
+    if "qb" in feats:
+        comparisons += [("elo_qb", "elo_tuned")] + [("elo_qb", b) for b in bench]
     split_defs = [("validation", val, f"Validation seasons {min(val)}–{max(val)}",
                    "Elo parameters were **selected on these seasons**, so `elo_tuned` scores here are optimistic.")]
+    if "qb" in feats:
+        inj_val = {s for s in val if s >= 2010}
+        split_defs.append(("validation_2010_2019", inj_val, f"Validation seasons {min(inj_val)}–{max(inj_val)} "
+                           "(seasons with timestamped injury reports)",
+                           "The comparison for `elo_qb`: injury-report timestamps exist from 2010. "
+                           "Same Elo-selection caveat as above."))
     if args.reveal_holdout:
         split_defs.append(("holdout", hold, f"Holdout seasons {min(hold)}–{max(hold)}",
                            "Never used for tuning or any design choice. This is the honest estimate."))
@@ -210,7 +246,8 @@ def cmd_backtest(cfg: dict, args) -> int:
         results[key] = summary
         sections.append(section_lines(
             title, note, sets, summary, comparisons=comparisons,
-            reliability=["elo_tuned", "pbp_logit_full"] if feature_note else ["elo_tuned", "elo_tuned_platt"],
+            reliability=(["elo_tuned"] + [m for f, m in (("pbp", "pbp_logit_full"), ("qb", "elo_qb")) if f in feats]
+                         if feats else ["elo_tuned", "elo_tuned_platt"]),
             n_boot=v["bootstrap_samples"], n_bins=v["calibration_bins"],
         ))
     if not args.reveal_holdout:
@@ -220,7 +257,7 @@ def cmd_backtest(cfg: dict, args) -> int:
 
     reports = PROJECT_ROOT / "reports"
     reports.mkdir(exist_ok=True)
-    stem = f"{ds.name}_pbp_backtest" if feature_note else f"{ds.name}_backtest"
+    stem = f"{ds.name}_{'_'.join(sorted(feats))}_backtest" if feats else f"{ds.name}_backtest"
     (reports / f"{stem}.json").write_text(json.dumps(
         {"dataset": ds.name, "data_kind": ds.data_kind, "snapshot_id": ds.snapshot_id,
          "splits": {"burn_in": sorted(ds.splits.burn_in), "validation": sorted(val), "holdout": sorted(hold)},
@@ -240,9 +277,7 @@ def cmd_backtest(cfg: dict, args) -> int:
                 "Outcome: P(home win); ties excluded from scoring and counted separately. "
                 "Includes regular season and playoffs.",
                 f"Each kickoff slate forecast {f['as_of_lead_hours']}h before kickoff using only results known by then.",
-                *([feature_note, "`pbp_logit_epa`: Elo logit + offense/defense EPA per play (4-game rolling and "
-                   "season-to-date, home minus away). `pbp_logit_full`: Elo logit + all 8 metrics × offense/defense "
-                   "× 2 windows (32 differences)."] if feature_note else [])],
+                *feature_notes],
         sections=sections,
     )
     for key, summary in results.items():
@@ -392,7 +427,8 @@ def main(argv: list[str] | None = None) -> int:
         if name == "backtest":
             p.add_argument("--reveal-holdout", action="store_true",
                            help="also evaluate the sealed holdout seasons (logged)")
-            p.add_argument("--features", choices=["pbp"], help="also evaluate play-by-play feature models")
+            p.add_argument("--features", nargs="+", choices=["pbp", "qb"],
+                           help="also evaluate feature models: pbp (team play-by-play), qb (QB availability)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     if getattr(args, "dataset", None) is None and args.cmd in ("tune", "backtest"):
