@@ -68,10 +68,11 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - A test confirms a live forecast equals the backtest forecast for the same game and as-of time.
 - **Automated (2026-10-18):** `scripts/live_run.ps1` (fetch → forecast → score → commit `ledger/`),
   run by Claude desktop scheduled tasks `nfl-live-forecast-weekday` (Mon and Thu 3:00 PM ET) and
-  `nfl-live-forecast-sunday` (Sun 8:30 AM ET), saved in Auto mode. They only run while the app is open.
+  `nfl-live-forecast-sunday` (Sun 8:30 AM ET) and `nfl-live-forecast-sunday-evening` (Sun 6:30 PM ET),
+  saved in Auto mode. They only run while the app is open.
   Each run forecasts all games in the next 8 days, so every game gets several forecasts and scoring
-  uses the latest pre-kickoff one. Gaps: Sunday-night games are last forecast Sunday morning (before
-  that day's results); Thanksgiving 12:30 games are last forecast on Monday.
+  uses the latest pre-kickoff one. The Sunday-evening run refreshes Sunday-night games with that
+  afternoon's results. Gap: Thanksgiving 12:30 games are last forecast on Monday.
 
 ### Not built / not verified
 - No live forecast has been scored yet (all 18 games pending).
@@ -80,7 +81,6 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - Local git repository only (branch `main`); no remote, no CI.
 
 ### Open decisions (owner)
-- Add a Sunday ~6:30 PM ET run so Sunday-night forecasts use that afternoon's results?
 - When to reveal the 2020–2025 holdout (only after the next model changes are frozen).
 - Report the 09:00 kickoff defect upstream to nflverse/nfldata?
 - Run environment (local Windows PC assumed for now), budget.

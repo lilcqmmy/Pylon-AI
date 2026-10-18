@@ -46,7 +46,8 @@ run so git holds an outside record of when forecasts were made.
 
 `scripts\live_run.ps1` runs one full cycle (fetch → forecast → score → commit `ledger/`) and logs to
 `logs\live_runs.log`. Two Claude desktop scheduled tasks run it: `nfl-live-forecast-weekday`
-(Mon and Thu 3:00 PM ET) and `nfl-live-forecast-sunday` (Sun 8:30 AM ET). They only run while the app
+(Mon and Thu 3:00 PM ET), `nfl-live-forecast-sunday` (Sun 8:30 AM ET) and
+`nfl-live-forecast-sunday-evening` (Sun 6:30 PM ET). They only run while the app
 is open; a missed run happens on the next launch.
 
 `--reveal-holdout` evaluates the holdout seasons and appends an entry to `archive/holdout_reveals.jsonl`.
