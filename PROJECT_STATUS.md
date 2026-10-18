@@ -51,7 +51,11 @@ Splits fixed by the owner on 2026-10-15 before any real-data results were viewed
 Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449, default 0.2524, oracle
 0.2351. The holdout was viewed once before the K grid was widened (from the validation edge signal only).
 
-### Prospective forecasting (built 2026-10-18; no live forecasts archived yet)
+### Prospective forecasting (built 2026-10-18)
+- **First live run:** 2026-10-18T19:38:24Z, run `90f9f0675c61`, snapshot `sha256:2384f5f3bc7c2eb5`,
+  code `f5962f9`; 54 forecasts for 18 games (week 6 late games through week 7); ledger committed
+  in `a6456ff`, 26 min before the first kickoff. Week 7 forecasts predate week 6 results, so
+  re-run before those games; scoring uses the latest pre-kickoff forecast.
 - `sfi forecast`: frozen tuned Elo (K 20, HFA 48, regression 0.5, chosen on 2001–2019), replays all
   history to the current time, and forecasts unplayed games in the next 8 days (at least 10 min before
   kickoff). Models archived: `elo_tuned` (primary), `elo_tuned_platt`, `home_rate`.
@@ -64,7 +68,7 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - A test confirms a live forecast equals the backtest forecast for the same game and as-of time.
 
 ### Not built / not verified
-- No live forecasts archived yet; all real-data scores are retrospective.
+- No live forecast has been scored yet (all 18 games pending).
 - No injury, QB, roster or weather-forecast features; no score/margin/total or player-stat distributions.
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
 - Local git repository only (branch `main`); no remote, no CI.
