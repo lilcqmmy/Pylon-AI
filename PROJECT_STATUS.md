@@ -72,6 +72,18 @@ Validation 2001–2019 (5,055 games), paired Brier differences:
 overfits (calibration slope 0.89). The market's edge most likely comes from information neither model
 has (injuries, QB changes, news). The feature models stay out of the live runs.
 
+### Player availability evaluated (2026-10-18; not built)
+- See `docs/data_sources/nflverse_availability.md` (reproduce with `scripts/analysis/`). Downloaded
+  nflverse injuries 2009–2026 (2.0 MB) and depth charts 2001–2026 (16.1 MB), owner-approved, CC-BY 4.0.
+- Injury `date_modified` exists 2010–2024 and is pregame (median ≈ 47–55 h before kickoff); missing in
+  2009 and absent from 2025. Weekly depth charts (≤ 2024) lag but aren't hindsight-filled; 2025+ depth
+  charts are daily timestamped snapshots (QB1 = actual starter 91%). Schedule QB ids are hindsight.
+- Signal (validation ≤ 2019 only): starting QB changes in ≈ 11% of team-games and moves results ≈ 7.5
+  points of win probability against Elo. Upper bound with *hindsight* starter + QB quality: −0.0015
+  Brier vs Elo (≈ a quarter of the market gap); the pregame injury-report proxy alone: −0.0003 (n.s.).
+- Recommendation: build a QB-availability adjustment (expected starter at as-of × point-in-time QB
+  rating), evaluate on 2010–2019; expected gain ≲ 0.0015.
+
 ### Synthetic results (pipeline check only)
 Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449, default 0.2524, oracle
 0.2351. The holdout was viewed once before the K grid was widened (from the validation edge signal only).
@@ -113,9 +125,8 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Next steps
 1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
-2. Close the gap to the market with point-in-time player-availability features: QB starter changes
-   and injury reports (nflverse injuries have `date_modified`; needs its own known-at evaluation).
-   Team efficiency features alone did not help (see above).
+2. Build the QB-availability adjustment per `docs/data_sources/nflverse_availability.md` and
+   evaluate on 2010–2019 against `elo_tuned` (expected gain ≲ 0.0015 Brier).
 3. Score-margin and total distributions with interval-coverage tests.
 4. Optional: remote repository and CI running pytest.
 
@@ -125,4 +136,5 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-15 `a981217`: nflverse schedules evaluated (license, coverage, known-at); adapter planned.
 - 2026-10-15 `b11a2c5`: nflverse adapter built; first real-data validation results; holdout 2020–2025 sealed.
 - 2026-10-18: `sfi forecast` / `sfi score` for prospective forecasts with freshness gates and a ledger.
-- 2026-10-18: play-by-play team features evaluated on validation; no gain over Elo.
+- 2026-10-18 `80a216a`: play-by-play team features evaluated on validation; no gain over Elo.
+- 2026-10-18: injuries / depth charts / QB starters evaluated for point-in-time availability features.

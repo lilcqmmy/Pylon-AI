@@ -138,6 +138,19 @@ def test_aggregate_season_counts_and_exclusions(tmp_path):
     assert ("G", "B") not in out
 
 
+def test_release_specs_use_their_own_tag_and_file_names(tmp_path):
+    assert P.INJURIES.file_name(2015) == "injuries_2015.parquet"
+    assert P.DEPTH_CHARTS.file_name(2025) == "depth_charts_2025.parquet"
+    seen = []
+    meta = {"assets": [{"name": "injuries_2015.parquet", "size": 3, "updated_at": "t"}]}
+    [(_, folder, created)] = P.fetch_release(
+        P.INJURIES, tmp_path, [2015], get=lambda u: (seen.append(u), b"abc")[1],
+        get_json=lambda u: (seen.append(u), meta)[1])
+    assert seen[0].endswith("/releases/tags/injuries") and seen[1].endswith("/download/injuries/injuries_2015.parquet")
+    m = json.loads((folder / "manifest.json").read_text())
+    assert m["release"] == "injuries" and "date_modified" in m["caveat"]
+
+
 def test_fetch_pbp_skips_unchanged_assets(tmp_path):
     body = {"play_by_play_2026.parquet": b"x" * 10}
     meta = {"assets": [{"name": "play_by_play_2026.parquet", "size": 10, "updated_at": "2026-10-18T13:12:43Z"}]}

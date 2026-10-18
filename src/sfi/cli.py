@@ -83,14 +83,17 @@ def cmd_fetch(cfg: dict, args) -> int:
     state = "New snapshot" if created else "Unchanged since latest snapshot"
     print(f"{state}: {folder.relative_to(PROJECT_ROOT)}  ({manifest['bytes']} bytes, "
           f"sha256 {manifest['sha256'][:16]}, upstream updated {manifest['upstream_last_updated']})")
-    if args.pbp:
-        from sfi.data.sources import nflverse_pbp
-        from sfi.datasets import parse_seasons
-        pbp_root = PROJECT_ROOT / cfg["datasets"]["nflverse"]["pbp_dir"]
-        results = nflverse_pbp.fetch_pbp(pbp_root, sorted(parse_seasons(args.pbp)))
+    from sfi.data.sources import nflverse_pbp
+    from sfi.datasets import parse_seasons
+    nv = cfg["datasets"]["nflverse"]
+    for spec, seasons_arg, dir_key in ((nflverse_pbp.PBP, args.pbp, "pbp_dir"),
+                                       (nflverse_pbp.INJURIES, args.injuries, "injuries_dir"),
+                                       (nflverse_pbp.DEPTH_CHARTS, args.depth_charts, "depth_charts_dir")):
+        if not seasons_arg:
+            continue
+        results = nflverse_pbp.fetch_release(spec, PROJECT_ROOT / nv[dir_key], sorted(parse_seasons(seasons_arg)))
         got = [s for s, _, created in results if created]
-        print(f"Play-by-play: downloaded {len(got)} season(s) {got if got else ''}; "
-              f"{len(results) - len(got)} unchanged.")
+        print(f"{spec.tag}: downloaded {len(got)} season(s) {got if got else ''}; {len(results) - len(got)} unchanged.")
     print(manifest["attribution"])
     return 0
 
@@ -378,6 +381,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("synth", help="generate fictional NFL-like seasons")
     p = sub.add_parser("fetch", help="download a new nflverse schedules snapshot")
     p.add_argument("--pbp", metavar="SEASONS", help='also fetch play-by-play, e.g. "2000-2026" or "2026"')
+    p.add_argument("--injuries", metavar="SEASONS", help='also fetch injury reports (2009+)')
+    p.add_argument("--depth-charts", metavar="SEASONS", help='also fetch depth charts (2001+)')
     p = sub.add_parser("forecast", help="forecast upcoming games and archive them (real data)")
     p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
     sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")

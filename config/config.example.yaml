@@ -24,6 +24,8 @@ datasets:
   nflverse:                     # real NFL; see docs/data_sources/nflverse_schedules.md
     raw_dir: data/raw/nflverse/schedules
     pbp_dir: data/raw/nflverse/pbp
+    injuries_dir: data/raw/nflverse/injuries
+    depth_charts_dir: data/raw/nflverse/depth_charts
     min_season: 2000            # 1999 has no kickoff times
     known_at_hours: 5           # result treated as known this long after kickoff
     splits:                     # fixed 2026-10-15 before any real-data results were viewed
