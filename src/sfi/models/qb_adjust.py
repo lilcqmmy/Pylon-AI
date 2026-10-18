@@ -108,7 +108,7 @@ class QbAdjusted:
         if qb is None or self.as_of is None:
             return None
         known = [r for r in self._injuries.get((game.season, game.week, team), ())
-                 if r.qb == qb and r.known_at <= self.as_of]
+                 if r.player == qb and r.known_at <= self.as_of]
         return max(known, key=lambda r: r.known_at).status if known else None
 
     def _side(self, game: Game, team: str) -> dict:

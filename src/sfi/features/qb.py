@@ -3,7 +3,7 @@
 - QB game stats: per game, each passer's summed `qb_epa` and dropbacks (play-by-play).
 - Starters: each team's actual starting QB per game (schedules). This is hindsight for the game itself,
   so models may read it only for games whose results have been released.
-- Injury rows (QBs only), each with an explicit known-at time: `date_modified` when present and before
+- Injury rows (QBs by default), each with an explicit known-at time: `date_modified` when present and before
   kickoff; rows modified at/after kickoff are dropped; when the timestamp is missing (2009, 2025+) the
   row is treated as known `missing_hours` before kickoff.
 """
@@ -25,7 +25,7 @@ CACHE_VERSION = "v1"
 
 @dataclass(frozen=True)
 class InjuryRow:
-    qb: str
+    player: str
     status: str | None
     known_at: datetime
     timestamp_source: str  # "date_modified" | "policy"
@@ -92,7 +92,9 @@ def load_starters(schedule_csv: Path, games: list[Game]) -> dict[tuple[str, str]
     return out
 
 
-def load_injuries(files: dict[int, tuple[Path, dict]], games: list[Game], missing_hours: float = 24.0) -> InjuryLoad:
+def load_injuries(files: dict[int, tuple[Path, dict]], games: list[Game], missing_hours: float = 24.0,
+                  positions: set[str] | None = frozenset({"QB"})) -> InjuryLoad:
+    """Injury rows for `positions` (None = all positions)."""
     import pyarrow.parquet as pq
 
     kickoff = {}
@@ -105,7 +107,7 @@ def load_injuries(files: dict[int, tuple[Path, dict]], games: list[Game], missin
         d = t.to_pydict()
         dm = d.get("date_modified") or [None] * t.num_rows
         for team, week, gsis, pos, st, mod in zip(d["team"], d["week"], d["gsis_id"], d["position"], d["report_status"], dm):
-            if pos != "QB" or gsis is None or week is None:
+            if (positions is not None and pos not in positions) or gsis is None or week is None:
                 continue
             key = (int(season), int(week), FRANCHISE.get(team, team))
             ko = kickoff.get(key)

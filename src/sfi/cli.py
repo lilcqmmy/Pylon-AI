@@ -10,6 +10,8 @@
   sfi score                       score ledger forecasts once results are in a newer snapshot
   sfi backtest-scores [--dataset NAME] [--reveal-holdout]
                                   walk-forward score-margin and game-total distributions
+  sfi backtest-players [--reveal-holdout]
+                                  walk-forward passing/rushing/receiving yard distributions
 """
 
 from __future__ import annotations
@@ -404,6 +406,97 @@ def cmd_backtest_scores(cfg: dict, args) -> int:
     return 0
 
 
+def cmd_backtest_players(cfg: dict, args) -> int:
+    from sfi.data.sources import nflverse_pbp
+    from sfi.evaluation import players_eval as PE
+    from sfi.evaluation import scores_eval as SE
+    from sfi.features.players import STATS, load_player_games
+    from sfi.features.qb import load_injuries
+    from sfi.models.players import PlayerOppEff, PlayerParams, PlayerRecentAvg
+
+    ds = load_dataset(cfg, args.dataset)
+    if ds.name != "nflverse":
+        print("backtest-players requires --dataset nflverse", file=sys.stderr)
+        return 1
+    val, hold = ds.splits.validation, ds.splits.holdout
+    nv, pc = cfg["datasets"]["nflverse"], cfg["players"]
+    last = max(hold) if args.reveal_holdout else max(val)
+    games = ds.games_through(last)
+    seasons = sorted({g.season for g in games})
+    pbp_files = nflverse_pbp.latest_files(PROJECT_ROOT / nv["pbp_dir"], seasons)
+    inj_files = nflverse_pbp.latest_release_files(nflverse_pbp.INJURIES, PROJECT_ROOT / nv["injuries_dir"],
+                                                  [s for s in seasons if s >= 2009])
+    stats = load_player_games(pbp_files, PROJECT_ROOT / "data" / "derived" / "pbp")
+    inj = load_injuries(inj_files, games, missing_hours=cfg["features"]["qb"]["missing_timestamp_hours"], positions=None)
+    tag = (nflverse_pbp.combined_snapshot_id([m for _, m in pbp_files.values()]) + "|"
+           + nflverse_pbp.combined_snapshot_id([m for _, m in inj_files.values()]))
+    params = PlayerParams(**pc["params"])
+    lead = timedelta(hours=cfg["forecast"]["as_of_lead_hours"])
+    forecasts, records = [], []
+    for factory in (lambda: PlayerRecentAvg(stats, inj.rows, params, data_tag=tag),
+                    lambda: PlayerOppEff(stats, inj.rows, params, data_tag=tag)):
+        model = factory()
+        for as_of, fc in PE.iter_player_walkforward(games, model, as_of_lead=lead):
+            forecasts.append((model.name, as_of, fc))
+            records.append(PE.make_player_record(as_of, fc, model, source_snapshot_id=ds.snapshot_id, data_kind=ds.data_kind))
+    archive = ForecastArchive(PROJECT_ROOT / cfg["storage"]["player_archive"])
+    written, same = archive.append(records)
+    print(f"Archive: {written} new records, {same} identical re-runs ({len(archive)} total)")
+    if args.reveal_holdout:
+        log = PROJECT_ROOT / cfg["storage"]["holdout_reveal_log"]
+        with open(log, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps({"revealed_at_utc": _now(), "dataset": ds.name, "snapshot_id": ds.snapshot_id,
+                                 "holdout_seasons": sorted(hold), "kind": "players",
+                                 "models": sorted({f"{r.model_name}@{r.model_version}" for r in records})}) + "\n")
+
+    n_boot = cfg["validation"]["bootstrap_samples"]
+    inj_val = {s for s in val if s >= 2010}
+    splits = [("validation_2010_2019", inj_val, f"Validation {min(inj_val)}–{max(inj_val)} (injury reports available)")]
+    if args.reveal_holdout:
+        splits.append(("holdout", set(hold), f"Holdout {min(hold)}–{max(hold)}"))
+    sections, results = [], {}
+    stat_label = {"pass": "passing yards", "rush": "rushing yards", "rec": "receiving yards"}
+    for key, sset, title in splits:
+        evals, extra = PE.evaluate_players(forecasts, stats, sset)
+        sections.append([f"## {title}", ""])
+        for stat in STATS:
+            ev = {name: e for (name, s), e in evals.items() if s == stat}
+            if not ev:
+                continue
+            summ = SE.summarize_target(ev, n_boot)
+            zero = {name: extra[(name, s)]["no_opportunity"] for (name, s) in evals if s == stat}
+            results[f"{key}_{stat}"] = {"summary": summ, "no_opportunity": zero}
+            note = (f"Pregame pool: at least {params.min_opp[stat]} opportunities for the team in its last "
+                    f"{params.pool_games} games, still on the team, not listed Out/Doubtful before as-of. "
+                    f"Pool players with no opportunity (scored as 0): {zero}.")
+            sections.append(SE.section_lines(stat_label[stat], title, note, ev, summ, None,
+                                             [("players_opp_eff", "players_recent_avg")], n_boot))
+    if not args.reveal_holdout:
+        sections.append([f"## Holdout {min(hold)}–{max(hold)}", "", "**Sealed.** Not loaded or evaluated.", ""])
+    stem = f"{ds.name}_players_backtest"
+    (PROJECT_ROOT / "reports").mkdir(exist_ok=True)
+    (PROJECT_ROOT / "reports" / f"{stem}.json").write_text(json.dumps(
+        {"dataset": ds.name, "snapshot_id": ds.snapshot_id, "data_tag": tag, "params": asdict(params),
+         "results": results}, indent=2, default=str), encoding="utf-8")
+    write_markdown(PROJECT_ROOT / "reports" / f"{stem}.md", title=f"Player yardage distributions: {ds.name}",
+                   data_kind=ds.data_kind, benchmarks=[],
+                   header=[f"Data snapshot: `{ds.snapshot_id}`; play-by-play + injuries `{tag}`", *ds.notes,
+                           f"Forecasts per kickoff slate {cfg['forecast']['as_of_lead_hours']}h before kickoff; "
+                           "player stats read only from released games.",
+                           "`players_recent_avg`: mean of last 4 appearances. `players_opp_eff`: recent volume × shrunk "
+                           "career yards/opportunity × opponent allowed-rate adjustment.",
+                           f"Spread: model's own past residuals at a similar mean (at least {params.min_k}). Parameters: "
+                           f"{asdict(params)} (untuned). No player-prop market data is available for comparison.",
+                           "Yardage excludes laterals; matches official 2019 season totals for the yardage leaders."],
+                   sections=sections)
+    for k, r in results.items():
+        for name, s in r["summary"].items():
+            cov = " ".join(f"{lv}:{s['coverage'][str(lv)]['observed']:.3f}/{s['coverage'][str(lv)]['claimed']:.3f}" for lv in SE.LEVELS)
+            print(f"[{k}] {name:20s} n={s['n']:6d} CRPS={s['crps']:.2f} MAE={s['mae_median']:.1f} cov {cov} PIT={s['pit_chi2']:.0f}")
+    print(f"Report: reports/{stem}.md")
+    return 0
+
+
 def _live_dataset(cfg: dict):
     ds = load_dataset(cfg, cfg["live"]["dataset"])
     if ds.data_kind != "real":
@@ -592,10 +685,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("forecast", help="forecast upcoming games and archive them (real data)")
     p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
     sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")
-    for name in ("tune", "backtest", "backtest-scores"):
+    for name in ("tune", "backtest", "backtest-scores", "backtest-players"):
         p = sub.add_parser(name)
         p.add_argument("--dataset", help="dataset name from config (default: config `dataset`)")
-        if name == "backtest-scores":
+        if name in ("backtest-scores", "backtest-players"):
             p.add_argument("--reveal-holdout", action="store_true", help="also evaluate the sealed holdout (logged)")
         if name == "backtest":
             p.add_argument("--reveal-holdout", action="store_true",
@@ -604,10 +697,11 @@ def main(argv: list[str] | None = None) -> int:
                            help="also evaluate feature models: pbp (team play-by-play), qb (QB availability)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
-    if getattr(args, "dataset", None) is None and args.cmd in ("tune", "backtest", "backtest-scores"):
+    if getattr(args, "dataset", None) is None and args.cmd in ("tune", "backtest", "backtest-scores", "backtest-players"):
         args.dataset = cfg["dataset"]
     handlers = {"synth": cmd_synth, "fetch": cmd_fetch, "tune": cmd_tune, "backtest": cmd_backtest,
-                "forecast": cmd_forecast, "score": cmd_score, "backtest-scores": cmd_backtest_scores}
+                "forecast": cmd_forecast, "score": cmd_score, "backtest-scores": cmd_backtest_scores,
+                "backtest-players": cmd_backtest_players}
     try:
         return handlers[args.cmd](cfg, args)
     except DatasetError as e:

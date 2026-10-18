@@ -111,6 +111,33 @@ Validation 2001–2019 (5,065 games):
 - The market is still more accurate: model MAE − market MAE = +0.22 [+0.14, +0.30] (margin) and
   +0.20 [+0.13, +0.26] (total).
 
+### Player yardage distributions (2026-10-18; backtest only, not live)
+- `sfi backtest-players`: walk-forward passing, rushing and receiving yard distributions per player.
+  Player-game totals from play-by-play match official 2019 totals for the yardage leaders exactly.
+- **Pregame pool** (the main leakage risk): players with ≥ 10 pass attempts / 3 carries / 2 targets for the
+  team in its last 2 released games, still on the team, not listed Out/Doubtful on an injury report known
+  by the as-of time; for passing only the expected starter. Pool players who then get no opportunity are
+  scored as 0 yards, so evaluation never conditions on who played.
+- Models: `players_recent_avg` (mean of last 4 appearances) and `players_opp_eff` (recent volume × shrunk
+  career yards per opportunity × opponent allowed-rate adjustment). Spreads from each model's own past
+  residuals at a similar mean. All settings untuned. No player-prop market data for comparison.
+
+Validation 2010–2019 (holdout sealed):
+
+| Stat | Forecasts | No-opportunity share | CRPS recent avg | CRPS opp × eff | opp × eff − recent | Coverage 50/80/90 (opp × eff, obs/claimed) |
+|---|---:|---:|---:|---:|---|---|
+| Passing | 5,283 | 6.8% | 51.78 | 52.03 | +0.25 [−0.13, +0.64] n.s. | .497/.506, .801/.804, .896/.904 ✓ |
+| Rushing | 17,701 | 19.6% | 14.32 | 13.87 | −0.46 [−0.53, −0.39] better | .535/.527, .831/.819, .921/.913 (slightly too wide) |
+| Receiving | 41,752 | 20.4% | 14.38 | 14.14 | −0.24 [−0.30, −0.19] better | .529/.527, .818/.819, .912/.914 ✓ |
+
+- Receiving is calibrated in coverage and shape (PIT χ² 13 < 16.9). Rushing intervals are about 1 point
+  too wide (conservative); PIT flags shape for rushing and passing.
+- Development note: the first run forecast every QB with recent attempts; 14% of pool QBs then threw no
+  passes, making passing forecasts bimodal (CRPS 56). Restricting to the expected starter cut that to
+  6.8% (CRPS 52). Changed on validation results; holdout untouched.
+- The player backtest archive (`archive/player_forecasts.jsonl`, git-ignored) is ~400 MB after two model
+  versions; re-runs of the same version add nothing.
+
 ### Synthetic results (pipeline check only)
 Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449, default 0.2524, oracle
 0.2351. The holdout was viewed once before the K grid was widened (from the validation edge signal only).
@@ -144,7 +171,7 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Not built / not verified
 - No live forecast has been scored yet (all 18 games pending).
-- No weather-forecast features; no player-stat distributions.
+- No weather-forecast features; player yardage forecasts are not live; no joint (correlated) simulations.
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
 - Local git repository only (branch `main`); no remote, no CI.
 
@@ -156,9 +183,9 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 
 ### Next steps
 1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
-2. Neither team efficiency nor QB availability closed the market gap (≈ 0.007). Margin/total
-   distributions are built, calibrated and live. Options: player stat distributions (passing/rushing/
-   receiving), or revealing the holdout for an honest estimate of the frozen models.
+2. Player yardage distributions are built (backtest). Options: improve passing (opponent pass
+   defense, QB-specific adjustments), add player forecasts to live runs, threshold probabilities
+   P(yards > x), or reveal the holdout for an honest estimate of the frozen models.
 3. Score-margin and total distributions with interval-coverage tests.
 4. Optional: remote repository and CI running pytest.
 
@@ -172,4 +199,5 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-18 `f90b007`: injuries / depth charts / QB starters evaluated for availability features.
 - 2026-10-18 `44fb78c`: `elo_qb` built and validated on 2010–2019; no gain over Elo; not promoted.
 - 2026-10-18 `4e87267`: Stage 2 margin/total distributions with coverage and PIT tests; validated on 2001–2019.
-- 2026-10-18: margin/total distributions added to live forecasts and scoring.
+- 2026-10-18 `141105b`: margin/total distributions added to live forecasts and scoring.
+- 2026-10-18: player passing/rushing/receiving yard distributions, validated on 2010–2019.

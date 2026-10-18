@@ -71,6 +71,16 @@ scores:                         # `sfi backtest-scores`: margin and total distri
     init_league: 20.5
     init_home: 2.5
 
+players:                        # `sfi backtest-players` (untuned starting values)
+  params:
+    pool_games: 2
+    min_opp: {pass: 10, rush: 3, rec: 2}
+    k_player: {pass: 150.0, rush: 80.0, rec: 40.0}
+    k_def: {pass: 300.0, rush: 150.0, rec: 300.0}
+    volume_decay: 0.35
+    residual_window: 4000
+    min_k: 300
+
 calibration:                    # Platt scaling refit walk-forward on past issued forecasts only
   method: platt
   min_samples: 200              # identity mapping until this many past (non-tie) forecasts exist
@@ -102,6 +112,7 @@ storage:
   forecast_run_log: ledger/forecast_runs.jsonl            # one entry per `sfi forecast` run
   backtest_archive: archive/backtest_forecasts.jsonl      # walk-forward replays (git-ignored)
   score_archive: archive/score_forecasts.jsonl           # margin/total walk-forward replays
+  player_archive: archive/player_forecasts.jsonl         # player yardage walk-forward replays
   holdout_reveal_log: archive/holdout_reveals.jsonl
   immutable_forecasts: true
 

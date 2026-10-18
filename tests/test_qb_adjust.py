@@ -98,6 +98,6 @@ def test_load_injuries_timestamps_policy_and_drops(tmp_path):
     pq.write_table(pa.table(rows), path)
     res = load_injuries({2015: (path, {})}, [g], missing_hours=24)
     used = res.rows[(2015, 3, "A")]
-    assert [(r.qb, r.timestamp_source) for r in used] == [("q1", "date_modified"), ("q2", "policy")]
+    assert [(r.player, r.timestamp_source) for r in used] == [("q1", "date_modified"), ("q2", "policy")]
     assert used[1].known_at == T0 - timedelta(hours=24)
     assert res.dropped_after_kickoff == 1 and res.policy_rows == 1 and res.unmatched == 1  # week 9 has no game
