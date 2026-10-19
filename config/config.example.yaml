@@ -99,6 +99,7 @@ live:                           # `sfi forecast` / `sfi score` (prospective, rea
   primary_model: elo_tuned      # headline model in printed output; all live models are archived
   primary_score_model: scores_points_empirical  # margin/total columns in printed output
   primary_player_model: players_opp_eff
+  elo_hfa_home_k: 1.0           # challenger elo_hfa (docs/challenger_elo_hfa.md); fixed, do not tune
   player_thresholds:            # archived as P(yards >= x); integer yards, so no pushes
     pass: [200, 250, 300]
     rush: [50, 75, 100]

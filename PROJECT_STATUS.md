@@ -16,6 +16,10 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
 - Player yards `players_opp_eff`: beats recent average for rushing (−0.35) and receiving (−0.35), not
   passing; receiving and passing coverage calibrated, rushing intervals slightly too wide.
 - The holdout is now used: further design changes must be judged on prospective (2026+) forecasts.
+- Reports now say "already revealed" instead of "sealed"; reveal runs keep dated `*_holdout_*.md`
+  copies. The scores and players holdout reports are preserved as `*_holdout_20261019T1735Z.md`; the
+  win-probability holdout report was overwritten by a later run, but its numbers are in
+  `docs/holdout_results.md` and all forecasts remain in `archive/`.
 
 ## Earlier state (2026-10-15 to 2026-10-18)
 
@@ -204,8 +208,8 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - Abstention thresholds: to be set from empirical studies, not guessed.
 
 ### Next steps
-0. Holdout is spent. Candidate improvement: a time-varying home-field advantage for Elo, judged
-   only on prospective 2026+ forecasts (compare against the frozen `elo_tuned` in the live ledger).
+0. Challenger `elo_hfa` (time-varying home edge, `docs/challenger_elo_hfa.md`) runs live next to the
+   frozen `elo_tuned`; decision at ≥ 500 scored prospective games (paired Brier CI). No tuning until then.
 1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
 2. Player yardage distributions are built and live. Options: improve passing (opponent pass defense,
    QB-specific adjustments, narrower spreads for new starters), or reveal the holdout for an honest
@@ -227,3 +231,4 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-18 `3e1a39c`: player passing/rushing/receiving yard distributions, validated on 2010–2019.
 - 2026-10-18 `0f07639`: player yard distributions with P(yards ≥ x) added to live forecasts and scoring.
 - 2026-10-19 `65e08df`: designs frozen; holdout 2020–2025 revealed once (`docs/holdout_results.md`).
+- 2026-10-19 `6732d0d`: `elo_hfa` challenger pre-registered; added to live forecasts and scoring.

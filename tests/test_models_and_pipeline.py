@@ -63,3 +63,34 @@ def test_end_to_end_elo_beats_coin_flip_and_trails_oracle():
     assert s["coin_flip"]["brier"] == pytest.approx(0.25)
     assert s[ORACLE]["brier"] < s["baseline_elo"]["brier"] < s["coin_flip"]["brier"]
     assert s["baseline_elo"]["n_scored"] == s["coin_flip"]["n_scored"] > 0
+
+
+def test_adaptive_home_edge_learns_and_keeps_frozen_version_intact():
+    from sfi.models.elo import EloAdaptiveHome
+    from .conftest import T0
+    from datetime import timedelta
+    p = EloParams(k_factor=20, home_field_elo=48, season_regression=0.5)
+    assert EloModel(p, name="elo_tuned").version == "0.3.0+851aa1d0"  # frozen champion unchanged
+    m = EloAdaptiveHome(p, home_k=1.0)
+    assert m.version != EloModel(p).version and m.home_edge == 48
+    m.start_season(2024)
+    teams = ["A", "B", "C", "D"]
+    for i in range(40):  # home teams keep losing
+        h, a = teams[i % 4], teams[(i + 1) % 4]
+        m.observe(make_game(gid=f"G{i}", home=h, away=a, hs=10, as_=20, start=T0 + timedelta(days=i)))
+    assert m.home_edge < 48 - 15
+    before = m.home_edge
+    from dataclasses import replace
+    m.observe(replace(make_game(gid="N", home="A", away="B", hs=10, as_=20, start=T0 + timedelta(days=50)),
+                      neutral_site=True))
+    assert m.home_edge == before  # neutral sites do not move the home edge
+    g = make_game(gid="X", home="A", away="B", hs=None, as_=None, start=T0 + timedelta(days=60))
+    assert m.inputs_for(g)["home_edge_elo"] == round(before, 3)
+
+
+def test_adaptive_home_edge_is_bounded():
+    from sfi.models.elo import EloAdaptiveHome
+    m = EloAdaptiveHome(EloParams(home_field_elo=1.0), home_k=50.0)
+    m.start_season(2024)
+    m.observe(make_game(hs=0, as_=30))
+    assert m.home_edge == 0.0

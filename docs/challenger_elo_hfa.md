@@ -30,3 +30,9 @@ be used to judge it. The only fair test is games played after the challenger sta
   - otherwise keep both and re-check every additional 250 games.
 - No change to either model, and no tuning of `home_k`, until the decision. The validation backtest is
   only a sanity check that the challenger is not broken; it is not evidence for it.
+
+## Status log
+- 2026-10-19: wired into `sfi forecast` / `sfi score` (live ledger, paired with `elo_tuned`). Validation
+  sanity check only (not evidence): `elo_hfa` − `elo_tuned` = +0.0002 [−0.0001, +0.0005] on 2001–2019.
+  Learned home edge over time (Elo points): 60.9 (Aug 2005), 51.3 (2011), 59.7 (2014), 47.4 (2020),
+  35.1 (2023), 31.1 (2026-10-18) versus the frozen 48. First prospective forecasts: next scheduled run.

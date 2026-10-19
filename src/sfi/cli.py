@@ -62,6 +62,13 @@ def load_tuned(cfg: dict, ds) -> tuple[EloParams, dict] | None:
     return EloParams(**tuned["best"]["params"]), tuned
 
 
+def challenger_factories(cfg: dict, tuned_params: EloParams) -> list:
+    """Pre-registered challengers (docs/challenger_elo_hfa.md)."""
+    from sfi.models.elo import EloAdaptiveHome
+    k = cfg["live"]["elo_hfa_home_k"]
+    return [lambda: EloAdaptiveHome(tuned_params, home_k=k, name="elo_hfa")]
+
+
 def elo_factories(cfg: dict, tuned_params: EloParams) -> list:
     c = cfg["calibration"]
     return [
@@ -69,6 +76,32 @@ def elo_factories(cfg: dict, tuned_params: EloParams) -> list:
         lambda: PlattCalibrated(EloModel(tuned_params, name="elo_tuned"), min_samples=c["min_samples"],
                                 exclude_first_season=c["exclude_first_season"], name="elo_tuned_platt"),
     ]
+
+
+def _holdout_note(cfg: dict, ds, hold, kind: str) -> list[str]:
+    """Report section for a run that does not evaluate the holdout: sealed, or already revealed earlier."""
+    log = PROJECT_ROOT / cfg["storage"]["holdout_reveal_log"]
+    prior = []
+    if log.exists():
+        for line in log.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                d = json.loads(line)
+                if d.get("dataset") == ds.name and d.get("kind", "win") == kind:
+                    prior.append(d["revealed_at_utc"])
+    title = f"## Holdout {min(hold)}–{max(hold)}"
+    if prior:
+        return [title, "", f"**Already revealed** ({', '.join(prior)}); not evaluated in this run. Results: "
+                "`docs/holdout_results.md` and the dated `*_holdout_*.md` report copies. The holdout can no "
+                "longer serve as an unbiased test; judge new designs on prospective forecasts.", ""]
+    return [title, "", "**Sealed.** Not loaded or evaluated. Reveal only once the model design is frozen "
+            "(`--reveal-holdout`; every reveal is logged).", ""]
+
+
+def _save_holdout_copy(path: Path) -> None:
+    """Keep a dated copy of a report that includes the holdout, so later runs don't overwrite it."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    copy = path.with_name(f"{path.stem}_holdout_{stamp}{path.suffix}")
+    copy.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def cmd_synth(cfg: dict, args) -> int:
@@ -159,7 +192,7 @@ def cmd_backtest(cfg: dict, args) -> int:
     games = ds.games_through(last)  # sealed holdout: its games are not even loaded
 
     factories = [CoinFlip, HomeRate, lambda: EloModel(default, name="elo_default"),
-                 *elo_factories(cfg, tuned_params)]
+                 *elo_factories(cfg, tuned_params), *challenger_factories(cfg, tuned_params)]
     feats = args.features or []
     feature_notes: list[str] = []
     if feats and ds.name != "nflverse":
@@ -230,7 +263,8 @@ def cmd_backtest(cfg: dict, args) -> int:
     v = cfg["validation"]
     by_id = {g.game_id: g for g in games}
     bench = list(ds.benchmarks)
-    comparisons = [("elo_tuned", "elo_default"), ("elo_tuned_platt", "elo_tuned"), ("elo_tuned", "home_rate")]
+    comparisons = [("elo_tuned", "elo_default"), ("elo_tuned_platt", "elo_tuned"), ("elo_tuned", "home_rate"),
+                   ("elo_hfa", "elo_tuned")]
     comparisons += [(m, b) for b in bench for m in ("elo_tuned", "elo_tuned_platt")]
     if "pbp" in feats:
         comparisons += [("pbp_logit_epa", "elo_tuned"), ("pbp_logit_full", "elo_tuned"),
@@ -261,9 +295,7 @@ def cmd_backtest(cfg: dict, args) -> int:
             n_boot=v["bootstrap_samples"], n_bins=v["calibration_bins"],
         ))
     if not args.reveal_holdout:
-        sections.append([f"## Holdout seasons {min(hold)}–{max(hold)}", "",
-                         "**Sealed.** Not loaded or evaluated. Reveal only once the model design is frozen "
-                         "(`sfi backtest --reveal-holdout`; every reveal is logged).", ""])
+        sections.append(_holdout_note(cfg, ds, hold, "win"))
 
     reports = PROJECT_ROOT / "reports"
     reports.mkdir(exist_ok=True)
@@ -290,6 +322,8 @@ def cmd_backtest(cfg: dict, args) -> int:
                 *feature_notes],
         sections=sections,
     )
+    if args.reveal_holdout:
+        _save_holdout_copy(reports / f"{stem}.md")
     for key, summary in results.items():
         print(f"[{key}]")
         for name, s in summary.items():
@@ -382,7 +416,7 @@ def cmd_backtest_scores(cfg: dict, args) -> int:
                     rows.append(f"- `{name}`: {brier(ps, ys):.4f} (n = {len(ys)})")
                 sections.append(rows + [""])
     if not args.reveal_holdout:
-        sections.append([f"## Holdout {min(hold)}–{max(hold)}", "", "**Sealed.** Not loaded or evaluated.", ""])
+        sections.append(_holdout_note(cfg, ds, hold, "scores"))
 
     stem = f"{ds.name}_scores_backtest"
     (PROJECT_ROOT / "reports").mkdir(exist_ok=True)
@@ -402,6 +436,8 @@ def cmd_backtest_scores(cfg: dict, args) -> int:
                 "Market spread/total lines are point benchmarks only (recording time undocumented, likely near kickoff)."],
         sections=sections,
     )
+    if args.reveal_holdout:
+        _save_holdout_copy(PROJECT_ROOT / "reports" / f"{stem}.md")
     for k, summ in results.items():
         print(f"[{k}]")
         for name, s in summ.items():
@@ -478,7 +514,7 @@ def cmd_backtest_players(cfg: dict, args) -> int:
             sections.append(SE.section_lines(stat_label[stat], title, note, ev, summ, None,
                                              [("players_opp_eff", "players_recent_avg")], n_boot))
     if not args.reveal_holdout:
-        sections.append([f"## Holdout {min(hold)}–{max(hold)}", "", "**Sealed.** Not loaded or evaluated.", ""])
+        sections.append(_holdout_note(cfg, ds, hold, "players"))
     stem = f"{ds.name}_players_backtest"
     (PROJECT_ROOT / "reports").mkdir(exist_ok=True)
     (PROJECT_ROOT / "reports" / f"{stem}.json").write_text(json.dumps(
@@ -495,6 +531,8 @@ def cmd_backtest_players(cfg: dict, args) -> int:
                            f"{asdict(params)} (untuned). No player-prop market data is available for comparison.",
                            "Yardage excludes laterals; matches official 2019 season totals for the yardage leaders."],
                    sections=sections)
+    if args.reveal_holdout:
+        _save_holdout_copy(PROJECT_ROOT / "reports" / f"{stem}.md")
     for k, r in results.items():
         for name, s in r["summary"].items():
             cov = " ".join(f"{lv}:{s['coverage'][str(lv)]['observed']:.3f}/{s['coverage'][str(lv)]['claimed']:.3f}" for lv in SE.LEVELS)
@@ -591,7 +629,8 @@ def cmd_forecast(cfg: dict, args) -> int:
         player_factory = lambda: PlayerOppEff(pstats, pinj.rows, pparams, data_tag=ptag)  # noqa: E731
     try:
         records, run = live.build_run(
-            games=ds.games, factories=[HomeRate, *elo_factories(cfg, tuned_params)], now=now, cfg=live_cfg,
+            games=ds.games, factories=[HomeRate, *elo_factories(cfg, tuned_params), *challenger_factories(cfg, tuned_params)],
+            now=now, cfg=live_cfg,
             as_of_lead=timedelta(hours=f["as_of_lead_hours"]),
             gate=GateConfig(f["publish_gate"].get("min_prior_games_per_team") or 0),
             snapshot_id=ds.snapshot_id, manifest=manifest, market=ds.benchmarks.get("market_moneyline", {}),
@@ -623,9 +662,9 @@ def cmd_forecast(cfg: dict, args) -> int:
     lines = [f"Issued {run['issued_at_utc']} from snapshot {ds.snapshot_id} "
              f"(retrieved {manifest['retrieved_at_utc']}); code {commit[:7] if commit else '?'}"
              f"{' (uncommitted changes)' if dirty else ''}", "",
-             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) home_rate | Market (benchmark) "
+             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) elo_hfa (challenger) | P(home) home_rate | Market (benchmark) "
              f"| Margin median [80%] | Total median [80%] | Market spread / total |",
-             "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     mlines = run.get("market_lines_at_issue", {})
     for gid in run["game_ids"]:
         g, p = games[gid], by_game[gid]
@@ -633,6 +672,7 @@ def cmd_forecast(cfg: dict, args) -> int:
         site = " (neutral)" if g.neutral_site else ""
         lines.append(f"| {g.scheduled_start_utc.astimezone(eastern):%a %b %d %H:%M} | {g.away_team} @ {g.home_team}{site} | "
                      f"{p.get(lv['primary_model'], float('nan')):.3f} | {p.get('elo_tuned_platt', float('nan')):.3f} | "
+                     f"{p.get('elo_hfa', float('nan')):.3f} | "
                      f"{p.get('home_rate', float('nan')):.3f} | {mk} | {_fmt_dist(dist.get(gid), 'margin')} | "
                      f"{_fmt_dist(dist.get(gid), 'total')} | {_fmt_lines(mlines.get(gid))} |")
     print("\n".join(lines))
@@ -694,8 +734,8 @@ def cmd_score(cfg: dict, args) -> int:
             f"awaiting results. Excluded records: {res.excluded}.")
     if n < 100:
         note += f" **Only {n} scored games: far too few to judge skill or calibration.**"
-    comparisons = [("elo_tuned", "home_rate"), ("elo_tuned_platt", "elo_tuned"),
-                   ("elo_tuned", "market_at_issue"), ("elo_tuned", "market_moneyline")]
+    comparisons = [("elo_hfa", "elo_tuned"), ("elo_tuned", "home_rate"), ("elo_tuned_platt", "elo_tuned"),
+                   ("elo_tuned", "market_at_issue"), ("elo_tuned", "market_moneyline"), ("elo_hfa", "market_at_issue")]
     section = section_lines("Prospective forecasts", note, res.sets, summary, comparisons=comparisons,
                             reliability=["elo_tuned"] if n >= 100 else [],
                             n_boot=v["bootstrap_samples"], n_bins=v["calibration_bins"])

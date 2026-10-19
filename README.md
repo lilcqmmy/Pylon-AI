@@ -46,7 +46,8 @@ Prospective (live) forecasts for upcoming real games:
 .\.venv\Scripts\sfi.exe score                # after a later fetch: score forecasts whose games are final
 ```
 
-`forecast` uses the frozen tuned Elo (win probability) and the team points model (score-margin and
+`forecast` uses the frozen tuned Elo (win probability; plus the pre-registered challenger `elo_hfa`
+with a time-varying home edge) and the team points model (score-margin and
 game-total distributions) and the player opportunity x efficiency model (passing/rushing/receiving
 yards with P(yards >= x) at standard thresholds; full pmfs stored), replays all history up to now,
 and archives each forecast with
