@@ -104,6 +104,24 @@ def _save_holdout_copy(path: Path) -> None:
     copy.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def _subset_section(records, by_id, seasons, model_a, model_b, n_boot, pred, title) -> list[str]:
+    """Paired Brier difference model_a − model_b on games where `pred(model_a record)` is true."""
+    from sfi.evaluation.report import paired_brier_diff
+    ids = {r.game_id for r in records if r.model_name == model_a and r.season in seasons and pred(r)}
+    sub = [r for r in records if r.game_id in ids and r.model_name in (model_a, model_b)]
+    sets = score(sub, by_id, set(seasons))
+    lines = [f"## {title}", ""]
+    if model_a not in sets or not sets[model_a].p:
+        return lines + ["No games in this subset.", ""]
+    m, lo, hi, n = paired_brier_diff(sets, model_a, model_b, n_boot)
+    sa, sb = sets[model_a], sets[model_b]
+    from sfi.evaluation.metrics import brier
+    reading = "A better" if hi < 0 else "B better" if lo > 0 else "no clear difference"
+    return lines + [f"| A − B | Games | Brier A | Brier B | Mean diff | 95% CI | Reading |", "|---|---:|---:|---:|---:|---|---|",
+                    f"| {model_a} − {model_b} | {n} | {brier(sa.p, sa.y):.4f} | {brier(sb.p, sb.y):.4f} | {m:+.4f} | "
+                    f"[{lo:+.4f}, {hi:+.4f}] | {reading} |", ""]
+
+
 def cmd_synth(cfg: dict, args) -> int:
     s = cfg["datasets"]["synthetic"]
     games, truth = synthetic.generate(s["seed"], s["seasons"], s["n_teams"], s["weeks_per_season"])
@@ -244,6 +262,28 @@ def cmd_backtest(cfg: dict, args) -> int:
             f"{inj_seasons[-1]}): {sum(len(v) for v in inj.rows.values())} used, {inj.policy_rows} with policy "
             f"timestamp (kickoff − {qf['missing_timestamp_hours']:g}h), {inj.dropped_after_kickoff} dropped "
             f"(modified after kickoff), {inj.unmatched} unmatched. Injury data starts 2009, so compare on 2010–2019.")
+    if "avail" in feats:
+        from sfi.data.sources import nflverse_pbp
+        from sfi.features.availability import WEIGHTS, load_depth_charts
+        from sfi.features.qb import load_injuries
+        from sfi.models.avail import EloAvail
+        nv, af = cfg["datasets"]["nflverse"], cfg["features"]["avail"]
+        seasons = sorted({g.season for g in games})
+        dc_files = nflverse_pbp.latest_release_files(nflverse_pbp.DEPTH_CHARTS, PROJECT_ROOT / nv["depth_charts_dir"],
+                                                     [s for s in seasons if s >= 2001])
+        inj_files = nflverse_pbp.latest_release_files(nflverse_pbp.INJURIES, PROJECT_ROOT / nv["injuries_dir"],
+                                                      [s for s in seasons if s >= 2009])
+        depth = load_depth_charts(dc_files)
+        inj_all = load_injuries(inj_files, games, missing_hours=cfg["features"]["qb"]["missing_timestamp_hours"],
+                                positions=None)
+        avail_tag = (nflverse_pbp.combined_snapshot_id([m for _, m in dc_files.values()]) + "|"
+                     + nflverse_pbp.combined_snapshot_id([m for _, m in inj_files.values()]))
+        factories.append(lambda: EloAvail(tuned_params, depth, inj_all.rows, l2=af["l2"], min_samples=af["min_samples"],
+                                          name="elo_avail", data_tag=avail_tag))
+        feature_notes.append(
+            f"`elo_avail`: Elo logit + home−away weighted count of expected starters listed Out/Doubtful before as-of; "
+            f"weights {WEIGHTS} (fixed by reasoning); ridge L2 {af['l2']} refit each season. Depth charts: weekly "
+            "(same week, publish time undocumented) through 2024, daily snapshots from 2025.")
     records = run_walkforward(games, factories, source_snapshot_id=ds.snapshot_id,
                               data_kind=ds.data_kind, gate=gate, as_of_lead=lead)
     archive = ForecastArchive(PROJECT_ROOT / cfg["storage"]["backtest_archive"])
@@ -272,9 +312,11 @@ def cmd_backtest(cfg: dict, args) -> int:
         comparisons += [(m, b) for b in bench for m in ("pbp_logit_epa", "pbp_logit_full")]
     if "qb" in feats:
         comparisons += [("elo_qb", "elo_tuned")] + [("elo_qb", b) for b in bench]
+    if "avail" in feats:
+        comparisons += [("elo_avail", "elo_tuned")]
     split_defs = [("validation", val, f"Validation seasons {min(val)}–{max(val)}",
                    "Elo parameters were **selected on these seasons**, so `elo_tuned` scores here are optimistic.")]
-    if "qb" in feats:
+    if "qb" in feats or "avail" in feats:
         inj_val = {s for s in val if s >= 2010}
         split_defs.append(("validation_2010_2019", inj_val, f"Validation seasons {min(inj_val)}–{max(inj_val)} "
                            "(seasons with timestamped injury reports)",
@@ -294,6 +336,11 @@ def cmd_backtest(cfg: dict, args) -> int:
                          if feats else ["elo_tuned", "elo_tuned_platt"]),
             n_boot=v["bootstrap_samples"], n_bins=v["calibration_bins"],
         ))
+    if "avail" in feats:
+        sections.append(_subset_section(
+            records, by_id, {s for s in val if s >= 2010}, "elo_avail", "elo_tuned", v["bootstrap_samples"],
+            lambda r: max(r.inputs.get("home", {}).get("n_out", 0), r.inputs.get("away", {}).get("n_out", 0)) >= 2,
+            "Subset: either team has 2+ expected starters listed Out/Doubtful (2010–2019)"))
     if not args.reveal_holdout:
         sections.append(_holdout_note(cfg, ds, hold, "win"))
 
@@ -914,7 +961,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "backtest":
             p.add_argument("--reveal-holdout", action="store_true",
                            help="also evaluate the sealed holdout seasons (logged)")
-            p.add_argument("--features", nargs="+", choices=["pbp", "qb"],
+            p.add_argument("--features", nargs="+", choices=["pbp", "qb", "avail"],
                            help="also evaluate feature models: pbp (team play-by-play), qb (QB availability)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)

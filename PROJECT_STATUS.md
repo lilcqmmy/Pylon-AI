@@ -38,6 +38,16 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
   `elo_tuned`, market at issue and market close on games with |move| ≥ 0.05, with counts and how often the
   market moved toward Elo's side. No model change.
 
+## `elo_avail`: weighted starter availability (2026-10-19; validation sanity only)
+- Expected starters from depth charts (same-week weekly chart through 2024, publish time undocumented;
+  latest daily snapshot ≤ as-of from 2025) listed Out/Doubtful on an injury report known by as-of,
+  grouped QB / OL / secondary / pass rush / skill with fixed weights 3.0 / 1.0 / 1.0 / 0.7 / 0.5.
+  Ridge logistic on Elo logit + home−away weighted score (unscaled), L2 10, refit each season.
+- Validation 2010–2019 (2,662 games): elo_avail − elo_tuned **−0.0007 [−0.0019, +0.0005]**, no clear
+  difference; subset with either team 2+ starters out (1,007 games): −0.0006 [−0.0035, +0.0022].
+  Effect per weighted starter out: −0.11 logit (2019 fit). Starters found for 99.96% of team-games.
+- Not promoted; to be judged prospectively under a pre-registered rule (item 5).
+
 ## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified

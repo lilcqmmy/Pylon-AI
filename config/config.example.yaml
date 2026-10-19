@@ -53,6 +53,9 @@ features:
   pbp:                          # `sfi backtest --dataset nflverse --features pbp`
     l2: 10.0                    # ridge penalty on standardized features; fixed, not tuned
     min_samples: 200            # use Elo alone until this many past (non-tie) games are available
+  avail:                        # `sfi backtest --dataset nflverse --features avail` (elo_avail)
+    l2: 10.0                    # same ridge penalty as the other feature models; fixed
+    min_samples: 200
   qb:                           # `sfi backtest --dataset nflverse --features qb`
     k_prior: 300                # QB rating shrinkage: dropbacks of prior at prior_mean (untuned)
     prior_mean: 0.0             # qb_epa per dropback assumed for an unknown QB
