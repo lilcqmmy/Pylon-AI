@@ -67,6 +67,10 @@ Each live run also writes paper-tracking picks (`ledger/paper_picks/`, research 
 advice), records the pregame weather forecast for outdoor games (Open-Meteo, data collection only), and
 runs the pre-registered challengers `elo_hfa`, `elo_avail`, `elo_qbadj` next to `elo_tuned`.
 
+Model summary: `PROJECT_STATUS.md` starts with a generated table of every win-probability model
+(validation delta vs `elo_tuned`, status). Refresh it after any backtest or status change:
+`.venv\Scripts\python.exe -I scripts\update_model_summary.py "<project root>"`.
+
 `--reveal-holdout` evaluates the holdout seasons and appends an entry to `archive/holdout_reveals.jsonl`.
 For real data, use it only once the model design is frozen.
 
