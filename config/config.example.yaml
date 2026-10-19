@@ -120,6 +120,12 @@ live:                           # `sfi forecast` / `sfi score` (prospective, rea
   min_lead_minutes: 10          # never forecast a game closer than this to kickoff
   max_snapshot_age_hours: 24    # refuse to forecast from an older snapshot (run `sfi fetch`)
 
+market:                         # market-residual family (docs/market_biases.md); lines are inputs ONLY here
+  validation: 2006-2017
+  holdout: 2018-2025            # sealed until the owner says otherwise
+  l2: 10.0                      # ridge on indicators only; market slope unpenalized
+  coef_bootstrap: 400
+
 paper_picks:                    # research tracking only, not wagering advice (src/sfi/picks.py)
   folder: ledger/paper_picks
   model: elo_tuned

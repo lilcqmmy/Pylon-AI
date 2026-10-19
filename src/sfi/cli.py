@@ -719,6 +719,33 @@ def cmd_backtest_players(cfg: dict, args) -> int:
     return 0
 
 
+def cmd_market_validate(cfg: dict, args) -> int:
+    """Market-residual family validation (2006-2017). The holdout (2018-2025) is never loaded."""
+    from sfi.data.sources import nflverse
+    from sfi.datasets import parse_seasons
+    from sfi.market import hypotheses as H
+    from sfi.market import validate as MV
+    from sfi.market.dataset import build_rows
+    mc = cfg["market"]
+    val = sorted(parse_seasons(mc["validation"]))
+    ds = load_dataset(cfg, "nflverse")
+    games = [g for g in ds.games_through(max(val)) if g.season >= min(val)]
+    rows = build_rows(nflverse.latest_snapshot(PROJECT_ROOT / cfg["datasets"]["nflverse"]["raw_dir"]) / "games.csv",
+                      games, min_season=min(val))
+    results = H.run_validation(rows, cfg["validation"]["bootstrap_samples"])
+    lines = [f"# Market-residual family: validation {min(val)}–{max(val)}", "", f"> {MV.LABEL}", "",
+             f"- Data snapshot `{ds.snapshot_id}`; {len(rows)} games with a spread; holdout {mc['holdout']} sealed (not loaded).",
+             "- Pre-registration: `docs/market_biases.md` (committed before any of these numbers).", ""]
+    lines += MV.hypothesis_section(results) + MV.model_section(rows, val, mc["l2"], mc["coef_bootstrap"]) + MV.mde_note()
+    out = PROJECT_ROOT / "reports" / "market_validation.md"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    for r in results:
+        print(f"{r['id']:3s} p={r['p']:.3f} holm={r['p_holm']:.3f} est={r['estimate']:+.3f} supported={r['supported']}")
+    print(f"Report: {out.relative_to(PROJECT_ROOT)}")
+    return 0
+
+
 def _live_dataset(cfg: dict):
     ds = load_dataset(cfg, cfg["live"]["dataset"])
     if ds.data_kind != "real":
@@ -1154,6 +1181,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
     p.add_argument("--no-weather", action="store_true", help="skip recording the Open-Meteo pregame weather forecast")
     sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")
+    sub.add_parser("market-validate", help="market-residual family: hypotheses + market_logit on validation seasons")
     for name in ("tune", "backtest", "backtest-scores", "backtest-players"):
         p = sub.add_parser(name)
         p.add_argument("--dataset", help="dataset name from config (default: config `dataset`)")
@@ -1170,7 +1198,7 @@ def main(argv: list[str] | None = None) -> int:
         args.dataset = cfg["dataset"]
     handlers = {"synth": cmd_synth, "fetch": cmd_fetch, "tune": cmd_tune, "backtest": cmd_backtest,
                 "forecast": cmd_forecast, "score": cmd_score, "backtest-scores": cmd_backtest_scores,
-                "backtest-players": cmd_backtest_players}
+                "backtest-players": cmd_backtest_players, "market-validate": cmd_market_validate}
     try:
         return handlers[args.cmd](cfg, args)
     except DatasetError as e:
