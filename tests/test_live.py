@@ -6,7 +6,7 @@ import pytest
 from sfi import live
 from sfi.evaluation.walkforward import iter_walkforward
 from sfi.models.baselines import HomeRate
-from sfi.models.elo import EloModel
+from sfi.models.elo import EloModel, EloParams
 
 from .conftest import T0, make_game
 
@@ -303,3 +303,37 @@ def test_market_moves_use_issuing_run_and_closing_snapshot():
     [m] = live.market_moves(ledger, runs, games, {"G1": 0.60, "G2": 0.5}, "sha256:x")
     assert m["p_home_at_issue"] == 0.53 and m["p_home_close"] == 0.60
     assert m["market_move"] == pytest.approx(0.07) and m["model_p_home"] == 0.58 and m["home_outcome"] == 1.0
+
+
+def test_live_avail_forecast_equals_backtest_at_same_as_of():
+    from sfi.features.availability import DepthCharts
+    from sfi.features.qb import InjuryRow
+    from sfi.models.avail import EloAvail
+    gs = _season()
+    target = next(g for g in gs if g.game_id == "W1C")
+    now = target.scheduled_start_utc - timedelta(hours=1)
+    dc = DepthCharts()
+    dc.weekly[(target.season, target.week, "C")] = {"qc": "QB"}
+    inj = {(target.season, target.week, "C"): [InjuryRow("qc", "Out", now - timedelta(hours=30), "date_modified")]}
+    visible = [g if g.result_known_by(now) else replace(g, home_score=None, away_score=None, result_known_at_utc=None)
+               for g in gs]
+    [f] = live.forecast_now(visible, EloAvail(EloParams(), dc, inj, min_samples=1), now, [target],
+                            as_of_lead=timedelta(hours=1))
+    bt = {x.game.game_id: x for x in iter_walkforward(gs, EloAvail(EloParams(), dc, inj, min_samples=1))}
+    assert f.p_home_win == pytest.approx(bt["W1C"].p_home_win, abs=1e-12)
+    assert f.inputs["home"]["n_out"] == bt["W1C"].inputs["home"]["n_out"] == 1
+
+
+def test_challenger_decision_table_statuses():
+    import sfi.cli as cli
+    games = {}
+    ledger = []
+    for i in range(12):
+        g = make_game(gid=f"D{i}", home="A", away="B", week=1 + i // 4, start=T0 + timedelta(days=i), hs=24, as_=10)
+        games[g.game_id] = g
+        t = g.scheduled_start_utc - timedelta(hours=2)
+        ledger += [_rec(g.game_id, "elo_tuned", t, 0.5), _rec(g.game_id, "elo_hfa", t, 0.9)]
+    cfg = {"validation": {"bootstrap_samples": 200}}
+    table = "\n".join(cli._challenger_decisions(ledger, games, cfg))
+    assert "| elo_hfa | 12 |" in table and "waiting (12/500)" in table
+    assert "| elo_avail | 0 |" in table and "no scored games yet" in table
