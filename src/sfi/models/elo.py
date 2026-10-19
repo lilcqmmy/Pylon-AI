@@ -92,3 +92,35 @@ class EloModel:
             "home_prior_games_season": self.prior_games(game.home_key),
             "away_prior_games_season": self.prior_games(game.away_key),
         }
+
+
+class EloAdaptiveHome(EloModel):
+    """Elo whose home-field advantage is itself learned over time.
+
+    Starts at `params.home_field_elo` and, after every non-neutral game, moves by
+    `home_k * (outcome - expected)` (no margin-of-victory scaling), clipped to [0, 150] Elo points.
+    If home teams win less often than forecast, the home edge shrinks, and vice versa.
+    Ratings are updated exactly as in `EloModel`, using the current home edge.
+    """
+
+    feature_spec_version = "elo_v2_adaptive_home"
+
+    def __init__(self, params: EloParams | None = None, home_k: float = 1.0, name: str = "elo_hfa"):
+        super().__init__(params, name=name)
+        self.home_k = float(home_k)
+        self.home_edge = self.p.home_field_elo
+        spec = json.dumps({"elo": asdict(self.p), "home_k": self.home_k}, sort_keys=True).encode()
+        self.version = f"0.1.0+{hashlib.sha256(spec).hexdigest()[:8]}"
+
+    def _home_edge(self, game: Game) -> float:
+        hfa = 0.0 if game.neutral_site else self.home_edge
+        return self.ratings[game.home_key] + hfa - self.ratings[game.away_key]
+
+    def observe(self, game: Game) -> None:
+        expected = self.predict_home_win(game)
+        super().observe(game)
+        if not game.neutral_site:
+            self.home_edge = min(max(self.home_edge + self.home_k * (game.home_outcome - expected), 0.0), 150.0)
+
+    def inputs_for(self, game: Game) -> dict[str, Any]:
+        return {**super().inputs_for(game), "home_edge_elo": round(self.home_edge, 3), "home_k": self.home_k}
