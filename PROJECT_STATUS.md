@@ -84,6 +84,13 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
 - Market-disagreement study (`docs/market_disagreement.md`, hypothesis generator only): market Brier
   better in every disagreement bucket; paper returns indistinguishable from zero.
 
+## `elo_sched`: schedule context (2026-10-19; validation only, not live)
+- From the schedule alone: rest difference (±7 cap), bye and short-week differences, travel difference
+  (home-venue-per-season to venue, miles), time zones crossed (|Δlongitude|/15), primetime, divisional.
+  Ridge on the tuned-Elo logit, L2 10, refit each season. Stadium table extended to every venue since 2000.
+- Validation 2010–2019 (sanity only): +0.0002 [−0.0010, +0.0014]; |rest diff| ≥ 3 (602 games):
+  −0.0016 [−0.0044, +0.0012]; travel > 1,500 mi (558 games): +0.0012 [−0.0032, +0.0057]. No clear effect.
+
 ## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified

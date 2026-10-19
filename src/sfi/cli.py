@@ -334,6 +334,23 @@ def cmd_backtest(cfg: dict, args) -> int:
             f"`elo_avail`: Elo logit + home−away weighted count of expected starters listed Out/Doubtful before as-of; "
             f"weights {WEIGHTS} (fixed by reasoning); ridge L2 {af['l2']} refit each season. Depth charts: weekly "
             "(same week, publish time undocumented) through 2024, daily snapshots from 2025.")
+    if "sched" in feats:
+        from sfi.data.sources import nflverse
+        from sfi.data.sources.openmeteo import load_stadiums
+        from sfi.features.schedule import schedule_context
+        from sfi.models.sched import EloSched
+        sc_cfg = cfg["features"]["sched"]
+        sched_csv = nflverse.latest_snapshot(PROJECT_ROOT / cfg["datasets"]["nflverse"]["raw_dir"]) / "games.csv"
+        stadiums = load_stadiums(PROJECT_ROOT / "data" / "reference" / "stadiums.csv")
+        sched_ctx = schedule_context(sched_csv, games, stadiums)
+        factories.append(lambda: EloSched(tuned_params, sched_ctx, l2=sc_cfg["l2"], min_samples=sc_cfg["min_samples"],
+                                          name="elo_sched",
+                                          data_tag=ds.snapshot_id + "|" + file_sha256(PROJECT_ROOT / "data" / "reference" / "stadiums.csv")[:12]))
+        unknown = sum(1 for c in sched_ctx.values() if not c["venue_known"])
+        feature_notes.append(
+            f"`elo_sched`: tuned-Elo logit + schedule context (rest difference capped ±7, bye and short-week "
+            f"differences, travel difference in 1,000 miles, time-zone difference, primetime, divisional), ridge L2 "
+            f"{sc_cfg['l2']} refit each season; all from the schedule. Venues without coordinates: {unknown}.")
     if "combo" in feats:
         if {"avail", "qbadj"} & set(feats):
             print("--features combo already runs elo_avail and elo_qbadj; don't list them too", file=sys.stderr)
@@ -404,12 +421,14 @@ def cmd_backtest(cfg: dict, args) -> int:
         comparisons += [("elo_avail", "elo_tuned")]
     if "qbadj" in feats:
         comparisons += [("elo_qbadj", "elo_tuned")]
+    if "sched" in feats:
+        comparisons += [("elo_sched", "elo_tuned")]
     if "combo" in feats:
         comparisons += [("elo_avail", "elo_tuned"), ("elo_qbadj", "elo_tuned"), ("elo_combo", "elo_tuned"),
                         ("elo_combo", "elo_hfa"), ("elo_combo", "elo_avail"), ("elo_combo", "elo_qbadj")]
     split_defs = [("validation", val, f"Validation seasons {min(val)}–{max(val)}",
                    "Elo parameters were **selected on these seasons**, so `elo_tuned` scores here are optimistic.")]
-    if {"qb", "avail", "qbadj", "combo"} & set(feats):
+    if {"qb", "avail", "qbadj", "combo", "sched"} & set(feats):
         inj_val = {s for s in val if s >= 2010}
         split_defs.append(("validation_2010_2019", inj_val, f"Validation seasons {min(inj_val)}–{max(inj_val)} "
                            "(seasons with timestamped injury reports)",
@@ -442,6 +461,17 @@ def cmd_backtest(cfg: dict, args) -> int:
             records, by_id, {s for s in val if s >= 2010}, "elo_qbadj", "elo_tuned", v["bootstrap_samples"], changed,
             "Subset: a team's actual starting QB differed from its previous game's starter (2010–2019; "
             "actual starter used only to select games, not as an input)"))
+    if "sched" in feats:
+        v10 = {s for s in val if s >= 2010}
+        sections.append(_subset_section(
+            records, by_id, v10, "elo_sched", "elo_tuned", v["bootstrap_samples"],
+            lambda r: abs(sched_ctx.get(r.game_id, {}).get("rest_diff", 0)) >= 3,
+            "Subset: |rest difference| ≥ 3 days (2010–2019)"))
+        sections.append(_subset_section(
+            records, by_id, v10, "elo_sched", "elo_tuned", v["bootstrap_samples"],
+            lambda r: max(sched_ctx.get(r.game_id, {}).get("away_travel_mi", 0),
+                          sched_ctx.get(r.game_id, {}).get("home_travel_mi", 0)) > 1500,
+            "Subset: a team travels more than 1,500 miles (2010–2019)"))
     if not args.reveal_holdout:
         sections.append(_holdout_note(cfg, ds, hold, "win"))
 
@@ -1132,7 +1162,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "backtest":
             p.add_argument("--reveal-holdout", action="store_true",
                            help="also evaluate the sealed holdout seasons (logged)")
-            p.add_argument("--features", nargs="+", choices=["pbp", "qb", "avail", "qbadj", "combo"],
+            p.add_argument("--features", nargs="+", choices=["pbp", "qb", "avail", "qbadj", "combo", "sched"],
                            help="also evaluate feature models: pbp (team play-by-play), qb (QB availability)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)

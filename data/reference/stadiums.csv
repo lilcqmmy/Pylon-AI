@@ -40,3 +40,28 @@ RIO00,Maracana Stadium,Rio de Janeiro,-22.9122,-43.2302,international
 FRA00,Deutsche Bank Park,Frankfurt,50.0686,8.6455,international
 BER00,Olympiastadion,Berlin,52.5147,13.2395,international
 SAO00,Neo Quimica Arena,Sao Paulo,-23.5453,-46.4742,international
+ATL00,Georgia Dome,Atlanta,33.7577,-84.4008,historical dome
+MIN00,Hubert H. Humphrey Metrodome,Minneapolis,44.9738,-93.2581,historical dome
+MIN98,TCF Bank Stadium,Minneapolis,44.9765,-93.2245,historical
+NYC00,Giants Stadium,East Rutherford,40.8124,-74.0768,historical
+OAK00,Oakland-Alameda County Coliseum,Oakland,37.7516,-122.2005,historical
+SDG00,Qualcomm Stadium,San Diego,32.7831,-117.1196,historical
+SFO00,Candlestick Park,San Francisco,37.7136,-122.3863,historical
+STL00,Edward Jones Dome,St. Louis,38.6328,-90.1885,historical dome
+LAX97,StubHub Center,Carson,33.8644,-118.2611,historical
+LAX99,Los Angeles Memorial Coliseum,Los Angeles,34.0141,-118.2879,historical
+BUF01,Rogers Centre,Toronto,43.6414,-79.3894,international
+LON01,Twickenham Stadium,London,51.4560,-0.3415,international
+GER00,Allianz Arena,Munich,48.2188,11.6247,international
+BOS99,Foxboro Stadium,Foxborough,42.0909,-71.2643,historical
+BRG00,Tiger Stadium (LSU),Baton Rouge,30.4120,-91.1838,historical
+CHI99,Memorial Stadium (Champaign),Champaign,40.0992,-88.2359,historical
+DAL99,Texas Stadium,Irving,32.8401,-96.9112,historical
+DEN99,Mile High Stadium,Denver,39.7439,-105.0201,historical
+DET99,Pontiac Silverdome,Pontiac,42.6457,-83.2551,historical dome
+IND99,RCA Dome,Indianapolis,39.7638,-86.1636,historical dome
+PHI99,Veterans Stadium,Philadelphia,39.9066,-75.1714,historical
+PHO99,Sun Devil Stadium,Tempe,33.4264,-111.9325,historical
+PIT99,Three Rivers Stadium,Pittsburgh,40.4468,-80.0126,historical
+SAN00,Alamodome,San Antonio,29.4170,-98.4789,historical dome
+SEA99,Husky Stadium,Seattle,47.6503,-122.3016,historical

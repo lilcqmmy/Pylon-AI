@@ -57,6 +57,9 @@ features:
     factor: 875.0               # Elo points per unit of qb_epa/dropback (~35 dropbacks x ~25 Elo per point)
     k_prior: 300.0
     prior_mean: 0.0
+  sched:                        # `sfi backtest --dataset nflverse --features sched` (elo_sched)
+    l2: 10.0                    # fixed, same as the other ridge layers
+    min_samples: 200
   avail:                        # `sfi backtest --dataset nflverse --features avail` (elo_avail)
     l2: 10.0                    # same ridge penalty as the other feature models; fixed
     min_samples: 200
