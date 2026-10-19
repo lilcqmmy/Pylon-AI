@@ -238,13 +238,15 @@ def load_snapshot(folder: Path, *, min_season: int, known_at_hours: float) -> Sn
 
 
 def market_lines(rows: list[dict[str, str]], min_season: int) -> dict[str, dict]:
-    """Closing-ish spread and total lines (recording time undocumented). Benchmark only, never a feature."""
+    """Spread, total and moneyline prices as published in the snapshot (recording time undocumented; in a
+    live run they are the lines at issue time). Benchmarks / paper tracking only, never a model feature."""
     out = {}
     for r in rows:
         if int(r["season"]) < min_season:
             continue
         ln = {}
-        for key, col in (("spread", "spread_line"), ("total", "total_line")):
+        for key, col in (("spread", "spread_line"), ("total", "total_line"),
+                         ("home_ml", "home_moneyline"), ("away_ml", "away_moneyline")):
             v = r.get(col, "NA")
             if v not in NA:
                 try:

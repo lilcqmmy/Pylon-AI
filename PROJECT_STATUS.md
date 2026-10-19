@@ -21,6 +21,16 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
   win-probability holdout report was overwritten by a later run, but its numbers are in
   `docs/holdout_results.md` and all forecasts remain in `archive/`.
 
+## Paper picks (2026-10-19; research tracking, not wagering advice)
+- Each live run appends `ledger/paper_picks/picks_<date>.csv` (requested columns plus Paper Only, Issued At,
+  Run ID, Model, Edge, Market Implied P, Game ID, Pick Side). Pick = side where `elo_tuned` most exceeds the
+  raw moneyline implied probability at issue (incl. margin); paper stake 1 unit if edge ≥ 0.03;
+  confidence High ≥ 0.10, Medium ≥ 0.05. Rows are written even without odds (no edge, no stake).
+- `sfi score` grades the latest pre-kickoff pick per game: paper profit at the odds at issue, return per
+  unit with week-block CI, closing-line value, hit rate vs mean pick probability.
+- Expectation stated up front: `elo_tuned` trails the market out of sample (Brier +0.013), so most
+  "edges" should be model error. A dry run flagged 8 of 15 games for a paper stake.
+
 ## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified

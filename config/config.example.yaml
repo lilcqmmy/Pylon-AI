@@ -109,6 +109,13 @@ live:                           # `sfi forecast` / `sfi score` (prospective, rea
   min_lead_minutes: 10          # never forecast a game closer than this to kickoff
   max_snapshot_age_hours: 24    # refuse to forecast from an older snapshot (run `sfi fetch`)
 
+paper_picks:                    # research tracking only, not wagering advice (src/sfi/picks.py)
+  folder: ledger/paper_picks
+  model: elo_tuned
+  stake_edge: 0.03              # paper stake 1 unit if model P - raw market implied P >= this
+  high: 0.10                    # confidence High if edge >= this
+  medium: 0.05                  # Medium if edge >= this, else Low
+
 validation:
   scheme: rolling_origin
   calibration_bins: 10

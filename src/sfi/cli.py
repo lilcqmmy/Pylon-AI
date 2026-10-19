@@ -684,6 +684,13 @@ def cmd_forecast(cfg: dict, args) -> int:
         names = player_names([nflverse_pbp.latest_files(PROJECT_ROOT / cfg["datasets"]["nflverse"]["pbp_dir"], [s])[s][0]
                               for s in (cur - 1, cur)])
     player_lines = _player_table(records, games, lv["player_thresholds"], run.get("players"), names)
+    from sfi import picks as PK
+    pk = cfg["paper_picks"]
+    pick_rows = PK.make_picks(run=run, p_home={gid: v[pk["model"]] for gid, v in by_game.items() if pk["model"] in v},
+                              games=games, model=pk["model"], stake_edge=pk["stake_edge"], high=pk["high"],
+                              medium=pk["medium"], eastern=nflverse.EASTERN)
+    n_stake = sum(1 for r in pick_rows if r["Stake (units)"])
+    print(f"\nPaper picks (research tracking, not wagering advice): {len(pick_rows)} rows, {n_stake} with a paper stake.")
     n_players = sum(1 for r in records if r.outcome_type.startswith("player_"))
     print(f"\nPlayer yardage forecasts: {n_players} ({run.get('players')})")
     qb_rows = [ln for ln in player_lines if "| passing |" in ln]
@@ -698,6 +705,9 @@ def cmd_forecast(cfg: dict, args) -> int:
         return 1
     live.append_jsonl(PROJECT_ROOT / cfg["storage"]["prospective_ledger"], [json.loads(r.to_json()) for r in records])
     live.append_jsonl(PROJECT_ROOT / cfg["storage"]["forecast_run_log"], [run])
+    run_date = datetime.now(timezone.utc).astimezone(nflverse.EASTERN).strftime("%Y-%m-%d")
+    picks_path = PK.write_picks(pick_rows, PROJECT_ROOT / pk["folder"], run_date)
+    print(f"Paper picks written to {picks_path.relative_to(PROJECT_ROOT)}")
     report = PROJECT_ROOT / "reports" / "upcoming_forecasts.md"
     report.parent.mkdir(exist_ok=True)
     report.write_text("# Upcoming forecasts (prospective, real NFL)\n\n"
@@ -793,6 +803,32 @@ def cmd_score(cfg: dict, args) -> int:
             player_sections.append(["## Player yardage", "", f"No scorable player forecasts yet "
                                     f"({pres.pending} game(s) pending).", ""])
         print(f"Players: {pres.pending} game(s) pending")
+    from sfi import picks as PK
+    pk = cfg["paper_picks"]
+    pick_rows = PK.read_all_picks(PROJECT_ROOT / pk["folder"])
+    picks_section = ["## Paper picks (research tracking, not wagering advice)", ""]
+    if pick_rows:
+        gr = PK.grade(pick_rows, games, ds.lines, v["bootstrap_samples"])
+        picks_section += [
+            f"Latest pre-kickoff paper pick per game from `{pk['folder']}`; pick = side where `{pk['model']}` most "
+            f"exceeds the market's raw implied probability; paper stake 1 unit if edge ≥ {pk['stake_edge']}. "
+            "Profit uses the American odds recorded at issue time; closing-line value (CLV) = market implied "
+            "probability of the picked side at close minus at issue (positive = market moved toward the pick).", "",
+            f"- Graded picks: {gr['picks_graded']} (pending: {gr['pending']}); staked paper bets: {gr['staked_bets']}"]
+        if "roi_per_unit" in gr:
+            picks_section.append(f"- Paper result: {gr['units_profit']:+.2f} units on {gr['units_staked']:g} staked; return per "
+                                 f"unit {gr['roi_per_unit']:+.3f} [{gr['roi_ci95'][0]:+.3f}, {gr['roi_ci95'][1]:+.3f}]")
+        if "clv_mean" in gr:
+            picks_section.append(f"- CLV: {gr['clv_mean']:+.4f} [{gr['clv_ci95'][0]:+.4f}, {gr['clv_ci95'][1]:+.4f}] "
+                                 f"(n = {gr['clv_n']})")
+        if "mean_pick_prob" in gr:
+            picks_section.append(f"- Picked side: mean model probability {gr['mean_pick_prob']:.3f}, won "
+                                 f"{gr['pick_hit_rate']:.3f}")
+        if gr["staked_bets"] < 200:
+            picks_section.append(f"- **Only {gr['staked_bets']} staked paper bets: far too few to conclude anything.**")
+        print(f"Paper picks: {gr}")
+    else:
+        picks_section.append("No paper picks yet.")
     out = PROJECT_ROOT / "reports" / "prospective_scores.md"
     write_markdown(out, title="Prospective scoring (real NFL, issued before kickoff)", data_kind="real",
                    benchmarks=["market_moneyline"],
@@ -802,7 +838,7 @@ def cmd_score(cfg: dict, args) -> int:
                            "`market_moneyline`: line in the scoring snapshot (likely closing). Market spread/total "
                            "lines are point benchmarks (`*_at_issue`: recorded with our forecast; `*_snapshot`: "
                            "scoring snapshot)."],
-                   sections=[section, *dist_sections, *player_sections])
+                   sections=[section, *dist_sections, *player_sections, picks_section + [""]])
     for name, s in summary.items():
         if s.get("n_scored"):
             print(f"  {name:18s} n={s['n_scored']:4d}  Brier={s['brier']:.4f}  LogLoss={s['log_loss']:.4f}")
@@ -816,6 +852,12 @@ def cmd_score(cfg: dict, args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Never crash on a console that can't print a character (e.g. "≥" on cp1252): replace it instead.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(prog="sfi", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", help="path to YAML config (default: config/config.yaml or example)")
