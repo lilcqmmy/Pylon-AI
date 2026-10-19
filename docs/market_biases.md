@@ -81,3 +81,12 @@ be promoted without a new pre-registration and fresh data.
 
 Published effects largely predate 2006, and Gray & Gray note they tend to fade, so the prior expectation is that
 most of these will **not** survive in 2006–2017 data.
+
+## Amendment 1 (2026-10-19, before any outcome was computed)
+While building the subsets, only subset **sizes** were inspected (no covers, totals or returns). Hypothesis **e2**
+(team on short rest vs an opponent not on short rest) selects **0 games** in 2006–2017: on Thursday games both teams
+are on short rest, so the registered subset is empty by construction. e2 is **dropped as untestable**, with no
+replacement (choosing a new definition now would be post hoc; a rest hypothesis can be re-registered for live data).
+The validation Holm family is therefore 10 tests: a1, a2, j, b, c2, i, d, e1, f, k. Subset sizes seen: a1 1,050;
+a2 189; j 267; b 205; c2 476 dome vs 2,355 outdoor; i 407; d 1,167 divisional vs 2,032 other; e1 384; f 725 key vs
+2,474 other; k 539.
