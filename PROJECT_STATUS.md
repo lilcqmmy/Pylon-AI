@@ -4,7 +4,20 @@ Living document. Original handoff status (2026-10-15) is preserved in `docs/hand
 Real-data results below are **retrospective backtests** (replayed under a known-at policy), not live
 forecasts. Synthetic results come from a fictional league and only test the machinery.
 
-## Current state (2026-10-15)
+## Holdout revealed (2026-10-19)
+
+Designs frozen in `docs/holdout_freeze.md` (commit `65e08df`) and the 2020–2025 holdout revealed once;
+full write-up in `docs/holdout_results.md`. Out-of-sample results:
+- Win probability `elo_tuned`: Brier 0.2230 (validation 0.2194); beats home-rate by −0.0265
+  [−0.0323, −0.0207]; market better by +0.0130 [+0.0093, +0.0167]. Main miscalibration: home-field
+  advantage shrank after 2019 (home teams forecast ≈ 0.567, won 0.50–0.58, 0.536 in 2024–25).
+- Margin/total `scores_points_empirical`: CRPS 7.33 / 7.58, beats naive, intervals and PIT calibrated;
+  market lines ≈ 0.4 points MAE better.
+- Player yards `players_opp_eff`: beats recent average for rushing (−0.35) and receiving (−0.35), not
+  passing; receiving and passing coverage calibrated, rushing intervals slightly too wide.
+- The holdout is now used: further design changes must be judged on prospective (2026+) forecasts.
+
+## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified
 - Python package `sfi` (Python 3.14 venv; deps: numpy, pyyaml, tzdata, pytest). `pytest`: **51 passed**.
@@ -191,6 +204,8 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - Abstention thresholds: to be set from empirical studies, not guessed.
 
 ### Next steps
+0. Holdout is spent. Candidate improvement: a time-varying home-field advantage for Elo, judged
+   only on prospective 2026+ forecasts (compare against the frozen `elo_tuned` in the live ledger).
 1. Start live runs: `sfi fetch` then `sfi forecast` before each slate; `sfi score` after results.
 2. Player yardage distributions are built and live. Options: improve passing (opponent pass defense,
    QB-specific adjustments, narrower spreads for new starters), or reveal the holdout for an honest
@@ -210,4 +225,5 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - 2026-10-18 `4e87267`: Stage 2 margin/total distributions with coverage and PIT tests; validated on 2001–2019.
 - 2026-10-18 `141105b`: margin/total distributions added to live forecasts and scoring.
 - 2026-10-18 `3e1a39c`: player passing/rushing/receiving yard distributions, validated on 2010–2019.
-- 2026-10-18: player yard distributions with P(yards ≥ x) added to live forecasts and scoring.
+- 2026-10-18 `0f07639`: player yard distributions with P(yards ≥ x) added to live forecasts and scoring.
+- 2026-10-19 `65e08df`: designs frozen; holdout 2020–2025 revealed once (`docs/holdout_results.md`).
