@@ -72,6 +72,18 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
   gusts, precipitation and its probability) for non-dome games in `weather_at_issue` of the run log.
   No model uses weather until at least a season has been recorded.
 
+## `elo_combo` (2026-10-19)
+- Stacks the learned home edge (`elo_hfa`), QB adjustment (`elo_qbadj`) and availability layer
+  (`elo_avail`, QB group weighted 0 to avoid double counting) at their fixed settings.
+- Validation 2010–2019 (sanity only): vs `elo_tuned` +0.0001 [−0.0018, +0.0020]; vs `elo_avail`
+  +0.0008 [−0.0010, +0.0027]: the small component effects do not add up visibly.
+- Pre-registered (`docs/challenger_combo.md`, commit `781f15c`, 14:12 ET) with a 98.75% (Bonferroni, 4)
+  rule; runs live as the fourth challenger.
+- Power analysis (`docs/power_analysis.md`): 0.002 is only borderline detectable on 2010–2019 for
+  `elo_avail` (MDE 0.0018) and not for `elo_qbadj` (0.0026); 500 prospective games detect only ≈ 0.004–0.006.
+- Market-disagreement study (`docs/market_disagreement.md`, hypothesis generator only): market Brier
+  better in every disagreement bucket; paper returns indistinguishable from zero.
+
 ## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified

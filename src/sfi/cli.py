@@ -78,8 +78,23 @@ def challenger_factories(cfg: dict, tuned_params: EloParams, data: dict | None =
             lambda: EloQbAdj(tuned_params, data["qb_games"], data["starters"], data["injuries"], data["depth"],
                              factor=qa["factor"], k_prior=qa["k_prior"], prior_mean=qa["prior_mean"],
                              name="elo_qbadj", data_tag=data["qbadj_tag"]),
+            lambda: _make_combo(cfg, tuned_params, data),
         ]
     return out
+
+
+def _make_combo(cfg: dict, tuned_params: EloParams, data: dict):
+    """elo_combo (docs/challenger_combo.md): QB-adjusted Elo with the learned home edge, wrapped in the
+    availability ridge layer with the QB group weighted 0 (QB absences are handled by the QB adjustment)."""
+    from sfi.features.availability import WEIGHTS
+    from sfi.models.avail import EloAvail
+    from sfi.models.qbadj import EloQbAdjAdaptiveHome
+    af, qa, k = cfg["features"]["avail"], cfg["features"]["qbadj"], cfg["live"]["elo_hfa_home_k"]
+    base = EloQbAdjAdaptiveHome(tuned_params, data["qb_games"], data["starters"], data["injuries"], data["depth"],
+                                factor=qa["factor"], k_prior=qa["k_prior"], prior_mean=qa["prior_mean"],
+                                home_k=k, name="elo_combo_inner", data_tag=data["qbadj_tag"])
+    return EloAvail(tuned_params, data["depth"], data["injuries"], weights={**WEIGHTS, "QB": 0.0}, l2=af["l2"],
+                    min_samples=af["min_samples"], name="elo_combo", data_tag=data["avail_tag"], base=base)
 
 
 def _challenger_inputs(cfg: dict, ds, games) -> dict:
@@ -319,7 +334,18 @@ def cmd_backtest(cfg: dict, args) -> int:
             f"`elo_avail`: Elo logit + home−away weighted count of expected starters listed Out/Doubtful before as-of; "
             f"weights {WEIGHTS} (fixed by reasoning); ridge L2 {af['l2']} refit each season. Depth charts: weekly "
             "(same week, publish time undocumented) through 2024, daily snapshots from 2025.")
-    qbadj_starters = None
+    if "combo" in feats:
+        if {"avail", "qbadj"} & set(feats):
+            print("--features combo already runs elo_avail and elo_qbadj; don't list them too", file=sys.stderr)
+            return 1
+        chal = _challenger_inputs(cfg, ds, games)
+        factories += challenger_factories(cfg, tuned_params, chal)[1:]  # elo_avail, elo_qbadj, elo_combo
+        qbadj_starters = chal["starters"]
+        feature_notes.append("`elo_combo`: QB-adjusted Elo (875) with the learned home edge (home_k "
+                             f"{cfg['live']['elo_hfa_home_k']}) inside the availability ridge layer with QB weight 0; "
+                             "all components at their pre-registered settings (docs/challenger_combo.md).")
+    else:
+        qbadj_starters = None
     if "qbadj" in feats:
         from sfi.data.sources import nflverse, nflverse_pbp
         from sfi.features.availability import load_depth_charts
@@ -378,9 +404,12 @@ def cmd_backtest(cfg: dict, args) -> int:
         comparisons += [("elo_avail", "elo_tuned")]
     if "qbadj" in feats:
         comparisons += [("elo_qbadj", "elo_tuned")]
+    if "combo" in feats:
+        comparisons += [("elo_avail", "elo_tuned"), ("elo_qbadj", "elo_tuned"), ("elo_combo", "elo_tuned"),
+                        ("elo_combo", "elo_hfa"), ("elo_combo", "elo_avail"), ("elo_combo", "elo_qbadj")]
     split_defs = [("validation", val, f"Validation seasons {min(val)}–{max(val)}",
                    "Elo parameters were **selected on these seasons**, so `elo_tuned` scores here are optimistic.")]
-    if {"qb", "avail", "qbadj"} & set(feats):
+    if {"qb", "avail", "qbadj", "combo"} & set(feats):
         inj_val = {s for s in val if s >= 2010}
         split_defs.append(("validation_2010_2019", inj_val, f"Validation seasons {min(inj_val)}–{max(inj_val)} "
                            "(seasons with timestamped injury reports)",
@@ -787,9 +816,9 @@ def cmd_forecast(cfg: dict, args) -> int:
     lines = [f"Issued {run['issued_at_utc']} from snapshot {ds.snapshot_id} "
              f"(retrieved {manifest['retrieved_at_utc']}); code {commit[:7] if commit else '?'}"
              f"{' (uncommitted changes)' if dirty else ''}", "",
-             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) elo_hfa (ch.) | P(home) elo_avail (ch.) | P(home) elo_qbadj (ch.) | P(home) home_rate | Market (benchmark) "
+             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) elo_hfa (ch.) | P(home) elo_avail (ch.) | P(home) elo_qbadj (ch.) | P(home) elo_combo (ch.) | P(home) home_rate | Market (benchmark) "
              f"| Margin median [80%] | Total median [80%] | Market spread / total |",
-             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     mlines = run.get("market_lines_at_issue", {})
     for gid in run["game_ids"]:
         g, p = games[gid], by_game[gid]
@@ -798,7 +827,7 @@ def cmd_forecast(cfg: dict, args) -> int:
         lines.append(f"| {g.scheduled_start_utc.astimezone(eastern):%a %b %d %H:%M} | {g.away_team} @ {g.home_team}{site} | "
                      f"{p.get(lv['primary_model'], float('nan')):.3f} | {p.get('elo_tuned_platt', float('nan')):.3f} | "
                      f"{p.get('elo_hfa', float('nan')):.3f} | {p.get('elo_avail', float('nan')):.3f} | "
-                     f"{p.get('elo_qbadj', float('nan')):.3f} | "
+                     f"{p.get('elo_qbadj', float('nan')):.3f} | {p.get('elo_combo', float('nan')):.3f} | "
                      f"{p.get('home_rate', float('nan')):.3f} | {mk} | {_fmt_dist(dist.get(gid), 'margin')} | "
                      f"{_fmt_dist(dist.get(gid), 'total')} | {_fmt_lines(mlines.get(gid))} |")
     print("\n".join(lines))
@@ -866,6 +895,8 @@ CHALLENGERS = {  # name: (registered interval level, decision games, subset desc
     "elo_qbadj": (1 - 0.05 / 3, 500, "either team's expected QB differs from its previous starter",
                   lambda i: any((i.get(s) or {}).get("expected") != (i.get(s) or {}).get("prev_starter")
                                 for s in ("home_qb", "away_qb") if i.get(s))),
+    "elo_combo": (1 - 0.05 / 4, 500, "either team 2+ expected starters Out/Doubtful",
+                  lambda i: max(i.get("home", {}).get("n_out", 0), i.get("away", {}).get("n_out", 0)) >= 2),
 }
 
 
@@ -927,7 +958,7 @@ def cmd_score(cfg: dict, args) -> int:
             f"awaiting results. Excluded records: {res.excluded}.")
     if n < 100:
         note += f" **Only {n} scored games: far too few to judge skill or calibration.**"
-    comparisons = [("elo_hfa", "elo_tuned"), ("elo_avail", "elo_tuned"), ("elo_qbadj", "elo_tuned"),
+    comparisons = [("elo_hfa", "elo_tuned"), ("elo_avail", "elo_tuned"), ("elo_qbadj", "elo_tuned"), ("elo_combo", "elo_tuned"),
                    ("elo_tuned", "home_rate"), ("elo_tuned_platt", "elo_tuned"),
                    ("elo_tuned", "market_at_issue"), ("elo_tuned", "market_moneyline"), ("elo_hfa", "market_at_issue")]
     section = section_lines("Prospective forecasts", note, res.sets, summary, comparisons=comparisons,
@@ -1101,7 +1132,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "backtest":
             p.add_argument("--reveal-holdout", action="store_true",
                            help="also evaluate the sealed holdout seasons (logged)")
-            p.add_argument("--features", nargs="+", choices=["pbp", "qb", "avail", "qbadj"],
+            p.add_argument("--features", nargs="+", choices=["pbp", "qb", "avail", "qbadj", "combo"],
                            help="also evaluate feature models: pbp (team play-by-play), qb (QB availability)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)

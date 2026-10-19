@@ -87,3 +87,43 @@ def test_unreleased_qb_stats_and_starters_are_not_read():
 def test_version_distinct_from_frozen_elo():
     p = EloParams(k_factor=20, home_field_elo=48, season_regression=0.5)
     assert EloQbAdj(p, {}, {}, {}, DepthCharts()).version != EloModel(p).version == "0.3.0+851aa1d0"
+
+
+def test_combo_without_signals_equals_adaptive_home_elo():
+    from sfi.models.avail import EloAvail
+    from sfi.models.elo import EloAdaptiveHome
+    from sfi.models.qbadj import EloQbAdjAdaptiveHome
+    from sfi.features.availability import WEIGHTS
+    games = _games(6)
+    p = EloParams(k_factor=20, home_field_elo=48, season_regression=0.5)
+    base = EloQbAdjAdaptiveHome(p, {}, {}, {}, DepthCharts(), home_k=1.0)
+    combo = EloAvail(p, DepthCharts(), {}, weights={**WEIGHTS, "QB": 0.0}, min_samples=10**6, name="elo_combo", base=base)
+    ah = EloAdaptiveHome(p, home_k=1.0)
+    a = [f.p_home_win for f in iter_walkforward(games, combo, with_inputs=False)]
+    b = [f.p_home_win for f in iter_walkforward(games, ah, with_inputs=False)]
+    assert a == pytest.approx(b, abs=1e-12)
+    assert combo.elo.home_edge == pytest.approx(ah.home_edge) and ah.home_edge != 48  # learned identically
+
+
+def test_combo_ignores_qb_in_availability_but_counts_other_groups():
+    from sfi.models.avail import EloAvail
+    from sfi.models.qbadj import EloQbAdjAdaptiveHome
+    from sfi.features.availability import WEIGHTS
+    games = _games(4)
+    target = games[2]
+    ko = target.scheduled_start_utc
+    dc = DepthCharts()
+    dc.weekly[(2015, 3, "A")] = {"qa": "QB", "ta": "OL"}
+    dc.qb_weekly[(2015, 3, "A")] = ["qa", "qa2"]
+    inj = {(2015, 3, "A"): [InjuryRow("qa", "Out", ko - timedelta(hours=30), "date_modified"),
+                            InjuryRow("ta", "Out", ko - timedelta(hours=30), "date_modified")]}
+    qb_games = {g.game_id: [("qa", "A", 9.0, 30.0)] for g in games}
+    starters = {(g.game_id, "A"): "qa" for g in games}
+    p = EloParams()
+    base = EloQbAdjAdaptiveHome(p, qb_games, starters, inj, dc)
+    combo = EloAvail(p, dc, inj, weights={**WEIGHTS, "QB": 0.0}, name="elo_combo", base=base)
+    r = Replay(games, combo)
+    r.advance_to(ko - timedelta(hours=1))
+    f = r.forecast(target)
+    assert f.inputs["home"]["out"]["QB"] == 1 and f.inputs["home"]["score"] == pytest.approx(WEIGHTS["OL"])
+    assert f.inputs["base"]["home_qb"]["expected"] == "qa2" and f.inputs["base"]["home_qb"]["adj_elo"] < 0

@@ -29,8 +29,10 @@ class EloAvail:
 
     def __init__(self, elo_params: EloParams, depth: DepthCharts,
                  injuries: dict[tuple[int, int, str], list[InjuryRow]], *, weights: dict[str, float] | None = None,
-                 l2: float = 10.0, min_samples: int = 200, name: str = "elo_avail", data_tag: str = ""):
-        self.elo = EloModel(elo_params, name="elo_inner")
+                 l2: float = 10.0, min_samples: int = 200, name: str = "elo_avail", data_tag: str = "",
+                 base: EloModel | None = None):
+        """`base` replaces the inner tuned Elo (used by `elo_combo`: QB-adjusted Elo with a learned home edge)."""
+        self.elo = base if base is not None else EloModel(elo_params, name="elo_inner")
         self.depth, self._injuries = depth, injuries
         self.weights = dict(weights or WEIGHTS)
         self.l2, self.min_samples, self.name = l2, min_samples, name
@@ -50,6 +52,8 @@ class EloAvail:
 
     def set_as_of(self, as_of: datetime) -> None:
         self.as_of = as_of
+        if hasattr(self.elo, "set_as_of"):
+            self.elo.set_as_of(as_of)
 
     def start_season(self, season: int) -> None:
         self.elo.start_season(season)
@@ -98,6 +102,8 @@ class EloAvail:
         x, info = self._issued.get(g.game_id, (None, None))
         if info is None:
             return {}
+        base = self.elo.inputs_for(g) if type(self.elo) is not EloModel else {}
         return {"p_elo": round(info["p_elo"], 6), "home": info["home"], "away": info["away"],
+                **({"base": base} if base else {}),
                 "coef": None if self._coef is None else [round(float(c), 5) for c in self._coef],
                 "fit_season": self.fit_season, "n_train": len(self._X)}

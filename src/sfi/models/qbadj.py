@@ -129,3 +129,35 @@ class EloQbAdj(EloModel):
 def asdict_params(p: EloParams) -> dict:
     from dataclasses import asdict
     return asdict(p)
+
+
+class EloQbAdjAdaptiveHome(EloQbAdj):
+    """`elo_qbadj` plus the learned home edge of `elo_hfa` (same rule: after each non-neutral game the edge
+    moves by home_k x (outcome - expected), clipped to [0, 150], starting from the tuned 48)."""
+
+    feature_spec_version = "elo_qbadj_hfa_v1"
+
+    def __init__(self, params: EloParams, *args, home_k: float = 1.0, name: str = "elo_qbadj_hfa", **kw):
+        super().__init__(params, *args, name=name, **kw)
+        self.home_k = float(home_k)
+        self.home_edge = self.p.home_field_elo
+        self.version = self.version.replace("0.1.0+", "0.1.0-hfa" + f"{self.home_k:g}+")
+
+    def _home_edge(self, game: Game) -> float:
+        hfa = 0.0 if game.neutral_site else self.home_edge
+        base = self.ratings[game.home_key] + hfa - self.ratings[game.away_key]
+        cached = self._adj.get(game.game_id)
+        return base + (cached[0] - cached[1] if cached else 0.0)
+
+    def observe(self, game: Game) -> None:
+        self._observing = True  # expectation with the forecast-time QB adjustment and current home edge
+        try:
+            expected = self.predict_home_win(game)
+        finally:
+            self._observing = False
+        super().observe(game)
+        if not game.neutral_site:
+            self.home_edge = min(max(self.home_edge + self.home_k * (game.home_outcome - expected), 0.0), 150.0)
+
+    def inputs_for(self, game: Game) -> dict[str, Any]:
+        return {**super().inputs_for(game), "home_edge_elo": round(self.home_edge, 3), "home_k": self.home_k}
