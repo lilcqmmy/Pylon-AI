@@ -100,6 +100,7 @@ live:                           # `sfi forecast` / `sfi score` (prospective, rea
   primary_score_model: scores_points_empirical  # margin/total columns in printed output
   primary_player_model: players_opp_eff
   elo_hfa_home_k: 1.0           # challenger elo_hfa (docs/challenger_elo_hfa.md); fixed, do not tune
+  line_move_threshold: 0.05     # report Elo vs closing line on games where |close - at issue| >= this
   player_thresholds:            # archived as P(yards >= x); integer yards, so no pushes
     pass: [200, 250, 300]
     rush: [50, 75, 100]
@@ -124,6 +125,7 @@ validation:
 storage:
   prospective_ledger: ledger/prospective_forecasts.jsonl  # live pre-game forecasts (tracked in git)
   forecast_run_log: ledger/forecast_runs.jsonl            # one entry per `sfi forecast` run
+  market_moves: ledger/market_moves.jsonl                 # closing vs at-issue market, per final game
   backtest_archive: archive/backtest_forecasts.jsonl      # walk-forward replays (git-ignored)
   score_archive: archive/score_forecasts.jsonl           # margin/total walk-forward replays
   player_archive: archive/player_forecasts.jsonl         # player yardage walk-forward replays

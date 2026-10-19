@@ -31,6 +31,13 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
 - Expectation stated up front: `elo_tuned` trails the market out of sample (Brier +0.013), so most
   "edges" should be model error. A dry run flagged 8 of 15 games for a paper stake.
 
+## Line-movement dataset (2026-10-19)
+- `sfi score` appends one row per final game to `ledger/market_moves.jsonl`: de-vigged market P(home) at
+  issue (from the run that issued the latest pre-kickoff `elo_tuned` forecast) and at close (scoring
+  snapshot), `market_move` = close − at issue. `reports/prospective_scores.md` shows Brier of
+  `elo_tuned`, market at issue and market close on games with |move| ≥ 0.05, with counts and how often the
+  market moved toward Elo's side. No model change.
+
 ## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified

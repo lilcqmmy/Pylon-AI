@@ -423,3 +423,30 @@ def market_at_issue(runs: list[dict], ledger: list[dict], games: dict[str, Game]
         if p is not None and (gid not in out or t > out[gid][0]):
             out[gid] = (t, p)
     return {gid: p for gid, (_, p) in out.items()}
+
+
+def market_moves(ledger: list[dict], runs: list[dict], games: dict[str, Game], close_p: dict[str, float],
+                 snapshot_id: str, model: str = "elo_tuned") -> list[dict]:
+    """For each final game with an at-issue market probability (from the run that issued the latest
+    pre-kickoff `model` forecast) and a closing probability in the scoring snapshot: the line movement
+    market_move = close - at_issue (de-vigged P(home win))."""
+    at_issue = market_at_issue(runs, [r for r in ledger if r.get("model_name") == model], games)
+    latest: dict[str, dict] = {}
+    for r in ledger:
+        if r.get("model_name") != model or r.get("outcome_type", "home_win_excl_tie") != "home_win_excl_tie":
+            continue
+        g = games.get(r["game_id"])
+        if g is None or _parse(r["prediction_as_of_utc"]) >= g.scheduled_start_utc:
+            continue
+        if r["game_id"] not in latest or r["prediction_as_of_utc"] > latest[r["game_id"]]["prediction_as_of_utc"]:
+            latest[r["game_id"]] = r
+    out = []
+    for gid, r in sorted(latest.items()):
+        g = games[gid]
+        if not g.is_final or gid not in at_issue or gid not in close_p:
+            continue
+        out.append({"game_id": gid, "issued_at_utc": r["prediction_as_of_utc"],
+                    "p_home_at_issue": round(at_issue[gid], 6), "p_home_close": round(close_p[gid], 6),
+                    "market_move": round(close_p[gid] - at_issue[gid], 6), "close_snapshot_id": snapshot_id,
+                    "model_p_home": r["distribution"]["p_home_win"], "home_outcome": g.home_outcome})
+    return out

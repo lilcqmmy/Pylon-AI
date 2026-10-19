@@ -803,6 +803,40 @@ def cmd_score(cfg: dict, args) -> int:
             player_sections.append(["## Player yardage", "", f"No scorable player forecasts yet "
                                     f"({pres.pending} game(s) pending).", ""])
         print(f"Players: {pres.pending} game(s) pending")
+    # Line movement: closing market vs market at issue (stored once per final game, append-only)
+    moves = live.market_moves(ledger, runs, games, ds.benchmarks.get("market_moneyline", {}), ds.snapshot_id)
+    mpath = PROJECT_ROOT / cfg["storage"]["market_moves"]
+    known = {r["game_id"] for r in live.read_jsonl(mpath)}
+    new_moves = [m for m in moves if m["game_id"] not in known]
+    if new_moves:
+        live.append_jsonl(mpath, new_moves)
+    all_moves = live.read_jsonl(mpath)
+    thr = cfg["live"]["line_move_threshold"]
+    move_section = ["## Line movement (market close vs market at issue)", "",
+                    f"De-vigged P(home win) from moneylines; market_move = close − at issue, stored in "
+                    f"`{cfg['storage']['market_moves']}` once per final game (latest pre-kickoff `elo_tuned` run).", ""]
+    decided = [m for m in all_moves if m["home_outcome"] != 0.5]
+    big = [m for m in decided if abs(m["market_move"]) >= thr]
+    move_section.append(f"- Games with both lines: {len(all_moves)} (non-tied: {len(decided)}); |move| ≥ {thr}: {len(big)}")
+    if decided:
+        mean_abs = sum(abs(m["market_move"]) for m in decided) / len(decided)
+        move_section.append(f"- Mean |move|: {mean_abs:.4f}")
+    if big:
+        from sfi.evaluation.metrics import brier
+        ys = [m["home_outcome"] for m in big]
+        b_elo = brier([m["model_p_home"] for m in big], ys)
+        b_close = brier([m["p_home_close"] for m in big], ys)
+        b_issue = brier([m["p_home_at_issue"] for m in big], ys)
+        toward = sum(1 for m in big if (m["market_move"] > 0) == (m["model_p_home"] > m["p_home_at_issue"]))
+        move_section += [
+            "", f"On games with |move| ≥ {thr} (n = {len(big)}):", "",
+            "| Forecast | Brier |", "|---|---:|",
+            f"| elo_tuned (at issue) | {b_elo:.4f} |", f"| market at issue | {b_issue:.4f} |",
+            f"| market close | {b_close:.4f} |", "",
+            f"- Market moved toward elo_tuned's side in {toward} of {len(big)} games."]
+        if len(big) < 100:
+            move_section.append(f"- **Only {len(big)} games: far too few to conclude anything.**")
+    print(f"Line moves: {len(all_moves)} stored ({len(new_moves)} new), {len(big)} with |move| >= {thr}")
     from sfi import picks as PK
     pk = cfg["paper_picks"]
     pick_rows = PK.read_all_picks(PROJECT_ROOT / pk["folder"])
@@ -838,7 +872,7 @@ def cmd_score(cfg: dict, args) -> int:
                            "`market_moneyline`: line in the scoring snapshot (likely closing). Market spread/total "
                            "lines are point benchmarks (`*_at_issue`: recorded with our forecast; `*_snapshot`: "
                            "scoring snapshot)."],
-                   sections=[section, *dist_sections, *player_sections, picks_section + [""]])
+                   sections=[section, *dist_sections, *player_sections, move_section + [""], picks_section + [""]])
     for name, s in summary.items():
         if s.get("n_scored"):
             print(f"  {name:18s} n={s['n_scored']:4d}  Brier={s['brier']:.4f}  LogLoss={s['log_loss']:.4f}")

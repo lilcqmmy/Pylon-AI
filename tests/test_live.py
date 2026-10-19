@@ -288,3 +288,18 @@ def test_player_ledger_scoring_latest_zero_and_pending():
     assert res.evals["rec"].y == [0] and res.no_opportunity == {"rec": 1}
     assert res.pending == 1
     assert res.thresholds["pass"]["250"][0][1] == 1.0
+
+
+def test_market_moves_use_issuing_run_and_closing_snapshot():
+    g1 = make_game(gid="G1", home="A", away="B", start=T0, hs=24, as_=10)
+    g2 = make_game(gid="G2", home="C", away="D", start=T0, hs=None, as_=None)  # not final: skipped
+    games = {"G1": g1, "G2": g2}
+    t_early, t_late, t_after = T0 - timedelta(days=2), T0 - timedelta(hours=3), T0 + timedelta(minutes=1)
+    ledger = [_rec("G1", "elo_tuned", t_early, 0.55), _rec("G1", "elo_tuned", t_late, 0.58),
+              _rec("G1", "elo_tuned", t_after, 0.99), _rec("G2", "elo_tuned", t_late, 0.5)]
+    runs = [{"issued_at_utc": live._iso(t_early), "market_p_home_at_issue": {"G1": 0.50}},
+            {"issued_at_utc": live._iso(t_late), "market_p_home_at_issue": {"G1": 0.53, "G2": 0.5}},
+            {"issued_at_utc": live._iso(t_after), "market_p_home_at_issue": {"G1": 0.90}}]
+    [m] = live.market_moves(ledger, runs, games, {"G1": 0.60, "G2": 0.5}, "sha256:x")
+    assert m["p_home_at_issue"] == 0.53 and m["p_home_close"] == 0.60
+    assert m["market_move"] == pytest.approx(0.07) and m["model_p_home"] == 0.58 and m["home_outcome"] == 1.0
