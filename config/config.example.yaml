@@ -125,6 +125,7 @@ market:                         # market-residual family (docs/market_biases.md)
   holdout: 2018-2025            # sealed until the owner says otherwise
   l2: 10.0                      # ridge on indicators only; market slope unpenalized
   coef_bootstrap: 400
+  artifact: artifacts/market_logit.json   # frozen fit written by `sfi market-validate`
 
 paper_picks:                    # research tracking only, not wagering advice (src/sfi/picks.py)
   folder: ledger/paper_picks
@@ -142,6 +143,7 @@ storage:
   prospective_ledger: ledger/prospective_forecasts.jsonl  # live pre-game forecasts (tracked in git)
   forecast_run_log: ledger/forecast_runs.jsonl            # one entry per `sfi forecast` run
   market_moves: ledger/market_moves.jsonl                 # closing vs at-issue market, per final game
+  market_residual_ledger: ledger/market_residual/forecasts.jsonl  # market_logit (separate family)
   backtest_archive: archive/backtest_forecasts.jsonl      # walk-forward replays (git-ignored)
   score_archive: archive/score_forecasts.jsonl           # margin/total walk-forward replays
   player_archive: archive/player_forecasts.jsonl         # player yardage walk-forward replays

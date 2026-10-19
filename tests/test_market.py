@@ -125,3 +125,34 @@ def test_hypothesis_selection_sides():
     assert b.hits == [1.0] and b.returns[0] == pytest.approx(100 / 110)  # +7 home dog lost by 3: covers
     f = H.select([x], "f")["main"]
     assert f.hits == [1.0]  # underdog (home) at a key number covers
+
+
+def test_live_market_records_grade_at_issue_line_and_are_append_only(tmp_path):
+    from sfi.market import live as ML
+    from sfi.market.dataset import MarketRow
+    g = make_game(gid="G", home="A", away="B", season=2026, start=T0, hs=24, as_=20)  # margin 4, total 44
+    flags = {k: 0.0 for k in ("home_dog", "home_dog_prime", "late_home_dog", "road_fav7", "high_total", "div",
+                              "home_bye_only", "away_bye_only", "home_short_only", "away_short_only", "key",
+                              "primetime", "home_streak3", "away_streak3")}
+    flags["dome"] = 0.0
+    x = MarketRow(game=g, spread=3.5, total=44.0, home_ml=-170, away_ml=150, home_spread_odds=-110,
+                  away_spread_odds=-110, over_odds=-110, under_odds=-110, p_home_ml=0.6, p_home_cover=0.5,
+                  p_over=0.5, roof="outdoors", flags=flags)
+    art = {"version": "0.1.0", "fingerprint": "abc", "targets": {
+        "win": {"beta": [0.0, 1.0] + [0.0] * 9}, "cover": {"beta": [0.0, 1.0] + [0.0] * 9},
+        "over": {"beta": [0.0, 1.0] + [0.0] * 3}}}
+    issued = T0 - timedelta(hours=2)
+    recs = ML.forecast_records([x], art, issued_at=issued, run_id="r", snapshot_id="s")
+    assert {r["target"] for r in recs} == {"win", "cover", "over"}
+    assert all(abs(r["p_model"] - r["p_market"]) < 1e-6 for r in recs)  # identity coefficients reproduce the market
+    assert ML.forecast_records([x], art, issued_at=T0 + timedelta(minutes=1), run_id="r", snapshot_id="s") == []
+    by = {r["target"]: r for r in recs}
+    assert ML.grade_outcome(by["cover"], g) == 1.0      # won by 4 vs 3.5 at issue
+    assert ML.grade_outcome(by["over"], g) is None      # 44 = 44: push
+    path = tmp_path / "m.jsonl"
+    assert ML.append_records(path, recs) == 3 and ML.append_records(path, recs) == 0
+    tampered = [{**recs[0], "record_hash": "different"}]
+    with pytest.raises(RuntimeError):
+        ML.append_records(path, tampered)
+    res = ML.score(recs, {"G": g}, n_boot=50)
+    assert res["cover"]["n"] == 1 and res["over"]["n"] == 0 and res["win"]["n"] == 1

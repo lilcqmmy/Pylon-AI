@@ -737,6 +737,12 @@ def cmd_market_validate(cfg: dict, args) -> int:
              f"- Data snapshot `{ds.snapshot_id}`; {len(rows)} games with a spread; holdout {mc['holdout']} sealed (not loaded).",
              "- Pre-registration: `docs/market_biases.md` (committed before any of these numbers).", ""]
     lines += MV.hypothesis_section(results) + MV.model_section(rows, val, mc["l2"], mc["coef_bootstrap"]) + MV.mde_note()
+    from sfi.market.live import fit_artifact
+    art = fit_artifact(rows, val, mc["l2"], ds.snapshot_id)
+    art_path = PROJECT_ROOT / mc["artifact"]
+    art_path.parent.mkdir(parents=True, exist_ok=True)
+    art_path.write_text(json.dumps(art, indent=2), encoding="utf-8")
+    print(f"Frozen market_logit (fit {min(val)}-{max(val)}) saved to {mc['artifact']} ({art['fingerprint']})")
     out = PROJECT_ROOT / "reports" / "market_validation.md"
     out.parent.mkdir(exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -768,6 +774,47 @@ def _player_inputs(cfg: dict, ds, games):
     tag = (nflverse_pbp.combined_snapshot_id([m for _, m in pbp_files.values()]) + "|"
            + nflverse_pbp.combined_snapshot_id([m for _, m in inj_files.values()]))
     return stats, inj, tag
+
+
+def _market_residual_records(cfg: dict, ds, run: dict, now) -> list[dict]:
+    """market_logit forecasts for this run's games from the frozen artifact (none if it is missing)."""
+    from sfi.data.sources import nflverse
+    from sfi.market.dataset import build_rows
+    from sfi.market.live import forecast_records
+    art_path = PROJECT_ROOT / cfg["market"]["artifact"]
+    if not art_path.exists():
+        print("market_logit artifact missing; run `sfi market-validate` (market-residual family skipped).", file=sys.stderr)
+        return []
+    art = json.loads(art_path.read_text(encoding="utf-8"))
+    season = max(g.season for g in ds.games)
+    rows = build_rows(nflverse.latest_snapshot(PROJECT_ROOT / cfg["datasets"]["nflverse"]["raw_dir"]) / "games.csv",
+                      [g for g in ds.games if g.season == season], min_season=season)
+    targets = set(run["game_ids"])
+    return forecast_records([x for x in rows if x.game.game_id in targets], art, issued_at=now, run_id=run["run_id"],
+                            snapshot_id=ds.snapshot_id)
+
+
+def _market_residual_section(cfg: dict, games: dict) -> list[str]:
+    from sfi.market.live import LABEL, score as market_score
+    path = PROJECT_ROOT / cfg["storage"]["market_residual_ledger"]
+    lines = ["## Market-residual family (separate from the independent forecast)", "",
+             f"`market_logit`, a {LABEL}. Frozen fit on {cfg['market']['validation']}; outcomes graded at the line each "
+             "forecast saw (cover vs at-issue spread, over vs at-issue total). Paired Brier: market_logit − market at issue "
+             "(negative favors market_logit). Never blended with or shown in the independent-forecast tables.", ""]
+    recs = live.read_jsonl(path)
+    if not recs:
+        return lines + ["No market-residual forecasts yet.", ""]
+    res = market_score(recs, games, cfg["validation"]["bootstrap_samples"])
+    lines += ["| Target | Scored | Pending | Brier market_logit | Brier market | Difference [95% CI] |", "|---|---:|---:|---:|---:|---|"]
+    for t, r in res.items():
+        if r["n"]:
+            lines.append(f"| {t} | {r['n']} | {r['pending']} | {r['brier_model']:.4f} | {r['brier_market']:.4f} | "
+                         f"{r['diff']:+.4f} [{r['ci'][0]:+.4f}, {r['ci'][1]:+.4f}] |")
+        else:
+            lines.append(f"| {t} | 0 | {r['pending']} | – | – | – |")
+    lines += ["", "On validation the detectable effect was about 0.002 Brier with ~2,600 games; a few weeks of live games "
+              "can only detect far larger differences.", ""]
+    return lines
 
 
 def _fmt_dist(d: dict | None, target: str) -> str:
@@ -903,6 +950,9 @@ def cmd_forecast(cfg: dict, args) -> int:
         names = player_names([nflverse_pbp.latest_files(PROJECT_ROOT / cfg["datasets"]["nflverse"]["pbp_dir"], [s])[s][0]
                               for s in (cur - 1, cur)])
     player_lines = _player_table(records, games, lv["player_thresholds"], run.get("players"), names)
+    market_recs = _market_residual_records(cfg, ds, run, now)
+    print(f"\nMarket-residual family (separate; uses market lines): {len(market_recs)} market_logit records "
+          f"for {len({r['game_id'] for r in market_recs})} games.")
     from sfi import picks as PK
     pk = cfg["paper_picks"]
     pick_rows = PK.make_picks(run=run, p_home={gid: v[pk["model"]] for gid, v in by_game.items() if pk["model"] in v},
@@ -924,6 +974,10 @@ def cmd_forecast(cfg: dict, args) -> int:
         return 1
     live.append_jsonl(PROJECT_ROOT / cfg["storage"]["prospective_ledger"], [json.loads(r.to_json()) for r in records])
     live.append_jsonl(PROJECT_ROOT / cfg["storage"]["forecast_run_log"], [run])
+    if market_recs:
+        from sfi.market.live import append_records
+        n_new = append_records(PROJECT_ROOT / cfg["storage"]["market_residual_ledger"], market_recs)
+        print(f"Market-residual records archived: {n_new} to {cfg['storage']['market_residual_ledger']}")
     run_date = datetime.now(timezone.utc).astimezone(nflverse.EASTERN).strftime("%Y-%m-%d")
     picks_path = PK.write_picks(pick_rows, PROJECT_ROOT / pk["folder"], run_date)
     print(f"Paper picks written to {picks_path.relative_to(PROJECT_ROOT)}")
@@ -1136,6 +1190,7 @@ def cmd_score(cfg: dict, args) -> int:
         print(f"Paper picks: {gr}")
     else:
         picks_section.append("No paper picks yet.")
+    market_section = _market_residual_section(cfg, games)
     out = PROJECT_ROOT / "reports" / "prospective_scores.md"
     write_markdown(out, title="Prospective scoring (real NFL, issued before kickoff)", data_kind="real",
                    benchmarks=["market_moneyline"],
@@ -1146,7 +1201,7 @@ def cmd_score(cfg: dict, args) -> int:
                            "lines are point benchmarks (`*_at_issue`: recorded with our forecast; `*_snapshot`: "
                            "scoring snapshot)."],
                    sections=[section, decision_section, *dist_sections, *player_sections, move_section + [""],
-                             picks_section + [""]])
+                             picks_section + [""], market_section])
     for name, s in summary.items():
         if s.get("n_scored"):
             print(f"  {name:18s} n={s['n_scored']:4d}  Brier={s['brier']:.4f}  LogLoss={s['log_loss']:.4f}")
