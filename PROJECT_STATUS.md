@@ -48,6 +48,15 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
   Effect per weighted starter out: −0.11 logit (2019 fit). Starters found for 99.96% of team-games.
 - Not promoted; to be judged prospectively under a pre-registered rule (item 5).
 
+## `elo_qbadj`: QB-adjusted Elo (2026-10-19; validation sanity only)
+- Team Elo adjusted by 875 × (expected starter's prior qb_epa/dropback rating − team's season QB
+  baseline); expected starter = first depth-chart QB not Out/Doubtful before as-of (previous starter if
+  no chart); adjustment also used in the rating update. All settings fixed by reasoning.
+- Validation 2010–2019: elo_qbadj − elo_tuned **−0.0004 [−0.0022, +0.0014]**, no clear difference;
+  subset where a team's actual starter changed (506 games): −0.0008 [−0.0082, +0.0068]. Over 2001–2019
+  it leans worse (+0.0012 [−0.0003, +0.0026]); 2001–2009 lacks injury reports.
+- Not promoted; to be judged prospectively under a pre-registered rule (item 5).
+
 ## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified

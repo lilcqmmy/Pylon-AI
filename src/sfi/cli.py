@@ -284,6 +284,33 @@ def cmd_backtest(cfg: dict, args) -> int:
             f"`elo_avail`: Elo logit + home−away weighted count of expected starters listed Out/Doubtful before as-of; "
             f"weights {WEIGHTS} (fixed by reasoning); ridge L2 {af['l2']} refit each season. Depth charts: weekly "
             "(same week, publish time undocumented) through 2024, daily snapshots from 2025.")
+    qbadj_starters = None
+    if "qbadj" in feats:
+        from sfi.data.sources import nflverse, nflverse_pbp
+        from sfi.features.availability import load_depth_charts
+        from sfi.features.qb import load_injuries, load_qb_games, load_starters
+        from sfi.models.qbadj import EloQbAdj
+        nv, qa = cfg["datasets"]["nflverse"], cfg["features"]["qbadj"]
+        seasons = sorted({g.season for g in games})
+        pbp_files = nflverse_pbp.latest_files(PROJECT_ROOT / nv["pbp_dir"], seasons)
+        dc_files = nflverse_pbp.latest_release_files(nflverse_pbp.DEPTH_CHARTS, PROJECT_ROOT / nv["depth_charts_dir"],
+                                                     [s for s in seasons if s >= 2001])
+        inj_files = nflverse_pbp.latest_release_files(nflverse_pbp.INJURIES, PROJECT_ROOT / nv["injuries_dir"],
+                                                      [s for s in seasons if s >= 2009])
+        qb_games = load_qb_games(pbp_files, PROJECT_ROOT / "data" / "derived" / "pbp")
+        qbadj_starters = load_starters(nflverse.latest_snapshot(PROJECT_ROOT / nv["raw_dir"]) / "games.csv", games)
+        qb_inj = load_injuries(inj_files, games, missing_hours=cfg["features"]["qb"]["missing_timestamp_hours"])
+        qb_depth = load_depth_charts(dc_files)
+        qbadj_tag = "|".join(nflverse_pbp.combined_snapshot_id([m for _, m in f.values()])
+                             for f in (pbp_files, dc_files, inj_files))
+        factories.append(lambda: EloQbAdj(tuned_params, qb_games, qbadj_starters, qb_inj.rows, qb_depth,
+                                          factor=qa["factor"], k_prior=qa["k_prior"], prior_mean=qa["prior_mean"],
+                                          name="elo_qbadj", data_tag=qbadj_tag))
+        feature_notes.append(
+            f"`elo_qbadj`: tuned Elo with team rating adjusted by {qa['factor']:g} × (expected starter QB rating − "
+            f"team's season QB baseline); QB rating = prior qb_epa/dropback shrunk to {qa['prior_mean']} with "
+            f"{qa['k_prior']:g} dropbacks; expected starter = first depth-chart QB not Out/Doubtful before as-of. "
+            "All fixed by reasoning.")
     records = run_walkforward(games, factories, source_snapshot_id=ds.snapshot_id,
                               data_kind=ds.data_kind, gate=gate, as_of_lead=lead)
     archive = ForecastArchive(PROJECT_ROOT / cfg["storage"]["backtest_archive"])
@@ -314,9 +341,11 @@ def cmd_backtest(cfg: dict, args) -> int:
         comparisons += [("elo_qb", "elo_tuned")] + [("elo_qb", b) for b in bench]
     if "avail" in feats:
         comparisons += [("elo_avail", "elo_tuned")]
+    if "qbadj" in feats:
+        comparisons += [("elo_qbadj", "elo_tuned")]
     split_defs = [("validation", val, f"Validation seasons {min(val)}–{max(val)}",
                    "Elo parameters were **selected on these seasons**, so `elo_tuned` scores here are optimistic.")]
-    if "qb" in feats or "avail" in feats:
+    if {"qb", "avail", "qbadj"} & set(feats):
         inj_val = {s for s in val if s >= 2010}
         split_defs.append(("validation_2010_2019", inj_val, f"Validation seasons {min(inj_val)}–{max(inj_val)} "
                            "(seasons with timestamped injury reports)",
@@ -341,6 +370,14 @@ def cmd_backtest(cfg: dict, args) -> int:
             records, by_id, {s for s in val if s >= 2010}, "elo_avail", "elo_tuned", v["bootstrap_samples"],
             lambda r: max(r.inputs.get("home", {}).get("n_out", 0), r.inputs.get("away", {}).get("n_out", 0)) >= 2,
             "Subset: either team has 2+ expected starters listed Out/Doubtful (2010–2019)"))
+    if "qbadj" in feats:
+        def changed(r, st=qbadj_starters):
+            return any(st.get((r.game_id, key)) not in (None, r.inputs.get(side, {}).get("prev_starter"))
+                       for side, key in (("home_qb", by_id[r.game_id].home_key), ("away_qb", by_id[r.game_id].away_key)))
+        sections.append(_subset_section(
+            records, by_id, {s for s in val if s >= 2010}, "elo_qbadj", "elo_tuned", v["bootstrap_samples"], changed,
+            "Subset: a team's actual starting QB differed from its previous game's starter (2010–2019; "
+            "actual starter used only to select games, not as an input)"))
     if not args.reveal_holdout:
         sections.append(_holdout_note(cfg, ds, hold, "win"))
 
@@ -961,7 +998,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "backtest":
             p.add_argument("--reveal-holdout", action="store_true",
                            help="also evaluate the sealed holdout seasons (logged)")
-            p.add_argument("--features", nargs="+", choices=["pbp", "qb", "avail"],
+            p.add_argument("--features", nargs="+", choices=["pbp", "qb", "avail", "qbadj"],
                            help="also evaluate feature models: pbp (team play-by-play), qb (QB availability)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
