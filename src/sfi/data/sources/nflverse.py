@@ -119,6 +119,7 @@ class Snapshot:
     manifest: dict
     repairs: list[str]  # documented corrections applied to upstream values
     lines: dict[str, dict] = None  # {game_id: {"spread": home-favored points, "total": points}}; benchmark only
+    venues: dict[str, dict] = None  # {game_id: {"stadium_id", "stadium", "roof"}} (roof may be blank for future games)
 
     @property
     def snapshot_id(self) -> str:
@@ -234,7 +235,10 @@ def load_snapshot(folder: Path, *, min_season: int, known_at_hours: float) -> Sn
     with open(path, newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     games, market, repairs = normalize_rows(rows, min_season=min_season, known_at_hours=known_at_hours)
-    return Snapshot(games, market, manifest, repairs, market_lines(rows, min_season))
+    venues = {r["game_id"]: {"stadium_id": r.get("stadium_id", ""), "stadium": r.get("stadium", ""),
+                             "roof": "" if r.get("roof") in NA else r.get("roof")}
+              for r in rows if int(r["season"]) >= min_season}
+    return Snapshot(games, market, manifest, repairs, market_lines(rows, min_season), venues)
 
 
 def market_lines(rows: list[dict[str, str]], min_season: int) -> dict[str, dict]:

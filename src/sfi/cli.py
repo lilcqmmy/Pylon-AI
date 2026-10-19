@@ -802,6 +802,13 @@ def cmd_forecast(cfg: dict, args) -> int:
                      f"{p.get('home_rate', float('nan')):.3f} | {mk} | {_fmt_dist(dist.get(gid), 'margin')} | "
                      f"{_fmt_dist(dist.get(gid), 'total')} | {_fmt_lines(mlines.get(gid))} |")
     print("\n".join(lines))
+    if not args.dry_run and not args.no_weather:
+        from sfi.data.sources import openmeteo
+        targets = [games[gid] for gid in run["game_ids"]]
+        stadiums = openmeteo.load_stadiums(PROJECT_ROOT / "data" / "reference" / "stadiums.csv")
+        wx, wx_skip = openmeteo.record_weather(targets, ds.venues, stadiums, now)
+        run["weather_at_issue"] = {"source": openmeteo.ATTRIBUTION, "games": wx, "skipped": wx_skip}
+        print(f"Weather recorded for {len(wx)} game(s) (data collection only; no model uses it); skipped {len(wx_skip)}.")
     names = {}
     if pstats is not None:
         from sfi.data.sources import nflverse_pbp
@@ -1084,6 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="also fetch the current season's play-by-play, injuries and depth charts (live forecasts)")
     p = sub.add_parser("forecast", help="forecast upcoming games and archive them (real data)")
     p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
+    p.add_argument("--no-weather", action="store_true", help="skip recording the Open-Meteo pregame weather forecast")
     sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")
     for name in ("tune", "backtest", "backtest-scores", "backtest-players"):
         p = sub.add_parser(name)

@@ -63,6 +63,10 @@ run so git holds an outside record of when forecasts were made.
 `nfl-live-forecast-sunday-evening` (Sun 6:30 PM ET). They only run while the app
 is open; a missed run happens on the next launch.
 
+Each live run also writes paper-tracking picks (`ledger/paper_picks/`, research only, not wagering
+advice), records the pregame weather forecast for outdoor games (Open-Meteo, data collection only), and
+runs the pre-registered challengers `elo_hfa`, `elo_avail`, `elo_qbadj` next to `elo_tuned`.
+
 `--reveal-holdout` evaluates the holdout seasons and appends an entry to `archive/holdout_reveals.jsonl`.
 For real data, use it only once the model design is frozen.
 

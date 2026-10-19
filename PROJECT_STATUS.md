@@ -65,6 +65,13 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
   registered interval, status (waiting / eligible / retire / keep running) and the pre-specified subsets.
 - `sfi fetch --live` now also refreshes the current season's depth charts (daily snapshots, ~3 MB).
 
+## Pregame weather recording (2026-10-19; data collection only)
+- Open-Meteo evaluated (`docs/data_sources/open_meteo.md`): free non-commercial, CC BY 4.0. Its historical
+  forecast archive is not point-in-time; the point-in-time Previous Runs archive starts Jan 2024. So each
+  live run now records the forecast at issue time (kickoff hour and 3-hour window: temperature, wind,
+  gusts, precipitation and its probability) for non-dome games in `weather_at_issue` of the run log.
+  No model uses weather until at least a season has been recorded.
+
 ## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified
