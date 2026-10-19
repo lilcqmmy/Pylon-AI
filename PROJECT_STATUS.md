@@ -29,6 +29,21 @@ Paired Brier difference vs `elo_tuned` on validation 2010–2019 (negative = bet
 Distribution models (not win probability): margin/total `scores_points_empirical` is primary (beats naive on validation and holdout, intervals calibrated); player yards `players_opp_eff` is primary (beats recent average for rushing and receiving, not passing).
 <!-- model-summary:end -->
 
+## Market-residual family (owner decision 2026-10-19)
+Market lines may be inputs to this separate family only; the independent forecast never sees them, and the two are
+reported separately and never blended. Research and paper tracking only.
+- Line audit (`docs/data_sources/market_lines.md`): one line per game in nflverse, updated in place, timing
+  undocumented, so treated as the close; live runs time-stamp lines from 2026.
+- Pre-registration (`docs/market_biases.md`, `6b487e1`, + Amendment 1 `ab26c3b`): 10 retrospective hypotheses
+  (Holm), 2 live-only, (h) on 2020–2025 only; validation 2006–2017, holdout 2018–2025 **sealed**.
+- Validation (`docs/market_validation_results.md`): **no hypothesis survives Holm**; closest b (underdogs vs 7+ road
+  favorites, 56.2%, raw p 0.09) and c2 (dome overs +5.0 pts, raw p 0.051). `market_logit` is slightly worse than the
+  market alone out of sample (win +0.0013, cover +0.0008, over +0.0011 Brier; MDE ≈ 0.002). Moneyline calibration
+  slope 1.015.
+- Live (tracking only): frozen `market_logit` (fit 2006–2017) archived to `ledger/market_residual/forecasts.jsonl`;
+  spread/total paper picks in `ledger/paper_picks/picks_market_<date>.csv`; both scored in their own section of
+  `reports/prospective_scores.md`.
+
 ## Holdout revealed (2026-10-19)
 
 Designs frozen in `docs/holdout_freeze.md` (commit `65e08df`) and the 2020–2025 holdout revealed once;

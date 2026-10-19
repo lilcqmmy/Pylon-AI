@@ -953,6 +953,13 @@ def cmd_forecast(cfg: dict, args) -> int:
     market_recs = _market_residual_records(cfg, ds, run, now)
     print(f"\nMarket-residual family (separate; uses market lines): {len(market_recs)} market_logit records "
           f"for {len({r['game_id'] for r in market_recs})} games.")
+    from sfi import picks as PK2
+    pk2 = cfg["paper_picks"]
+    market_pick_rows = PK2.make_market_picks(run=run, market_records=market_recs, games=games,
+                                             stake_edge=pk2["stake_edge"], high=pk2["high"], medium=pk2["medium"],
+                                             eastern=nflverse.EASTERN)
+    print(f"Market paper picks (research tracking, not wagering advice): {len(market_pick_rows)} rows, "
+          f"{sum(1 for r in market_pick_rows if r['Stake (units)'])} with a paper stake.")
     from sfi import picks as PK
     pk = cfg["paper_picks"]
     pick_rows = PK.make_picks(run=run, p_home={gid: v[pk["model"]] for gid, v in by_game.items() if pk["model"] in v},
@@ -981,6 +988,9 @@ def cmd_forecast(cfg: dict, args) -> int:
     run_date = datetime.now(timezone.utc).astimezone(nflverse.EASTERN).strftime("%Y-%m-%d")
     picks_path = PK.write_picks(pick_rows, PROJECT_ROOT / pk["folder"], run_date)
     print(f"Paper picks written to {picks_path.relative_to(PROJECT_ROOT)}")
+    if market_pick_rows:
+        mp = PK2.write_market_picks(market_pick_rows, PROJECT_ROOT / pk2["folder"], run_date)
+        print(f"Market paper picks written to {mp.relative_to(PROJECT_ROOT)}")
     report = PROJECT_ROOT / "reports" / "upcoming_forecasts.md"
     report.parent.mkdir(exist_ok=True)
     report.write_text("# Upcoming forecasts (prospective, real NFL)\n\n"
@@ -1191,6 +1201,21 @@ def cmd_score(cfg: dict, args) -> int:
     else:
         picks_section.append("No paper picks yet.")
     market_section = _market_residual_section(cfg, games)
+    mrows = PK.read_market_picks(PROJECT_ROOT / pk["folder"])
+    market_section += ["### Market paper picks (picks_market_*.csv; research tracking, not wagering advice)", ""]
+    if mrows:
+        mg = PK.grade_market(mrows, games, ds.lines, v["bootstrap_samples"])
+        for bet, r in mg.items():
+            line = f"- {bet}: staked paper bets {r['staked_bets']} (pending {r['pending']})"
+            if "roi_per_unit" in r:
+                line += (f"; {r['units_profit']:+.2f} units, return per unit {r['roi_per_unit']:+.3f} "
+                         f"[{r['roi_ci95'][0]:+.3f}, {r['roi_ci95'][1]:+.3f}]")
+            if "clv_points" in r:
+                line += f"; CLV {r['clv_points']:+.2f} points [{r['clv_ci95'][0]:+.2f}, {r['clv_ci95'][1]:+.2f}] (n {r['clv_n']})"
+            market_section.append(line)
+        market_section.append("")
+    else:
+        market_section += ["No market paper picks yet.", ""]
     out = PROJECT_ROOT / "reports" / "prospective_scores.md"
     write_markdown(out, title="Prospective scoring (real NFL, issued before kickoff)", data_kind="real",
                    benchmarks=["market_moneyline"],

@@ -157,3 +157,119 @@ def grade(rows: list[dict], games: dict[str, Game], closing: dict[str, dict], n_
     if probs:
         out.update(mean_pick_prob=float(np.mean(probs)), pick_hit_rate=float(np.mean(hits)))
     return out
+
+
+# ---------------------------------------------------------------- market-residual family (separate file)
+MARKET_EXTRA = EXTRA + ["Family"]
+
+
+def make_market_picks(*, run: dict, market_records: list[dict], games: dict[str, Game], stake_edge: float = 0.03,
+                      high: float = 0.10, medium: float = 0.05, eastern=None) -> list[dict]:
+    """Spread and total paper picks from market_logit (market-residual family; uses market lines as inputs).
+    Pick = side whose model probability most exceeds the raw implied probability of its own price."""
+    rows = []
+    for r in market_records:
+        if r["target"] not in ("cover", "over") or r["line_at_issue"] is None:
+            continue
+        g = games[r["game_id"]]
+        a_price, b_price = r["prices_at_issue"]
+        p = r["p_model"]
+        qa, qb = american_implied(a_price), american_implied(b_price)
+        ea, eb = p - qa, (1 - p) - qb
+        first = ea >= eb
+        edge, odds, q = (ea, a_price, qa) if first else (eb, b_price, qb)
+        if r["target"] == "cover":
+            side = "home" if first else "away"
+            team = g.home_team if first else g.away_team
+            handicap = -r["line_at_issue"] if first else r["line_at_issue"]
+            pick, line, bet, tag = team, f"{handicap:+g}", "Spread", "ATS"
+            what = f"P({team} covers {handicap:+g})"
+        else:
+            side = "over" if first else "under"
+            pick, line, bet, tag = side.capitalize(), f"{r['line_at_issue']:g}", "Total", "TOT"
+            what = f"P({side} {r['line_at_issue']:g})"
+        p_pick = p if first else 1 - p
+        stake = 1 if edge >= stake_edge else 0
+        conf = "High" if edge >= high else "Medium" if edge >= medium else "Low"
+        kickoff = g.scheduled_start_utc.astimezone(eastern) if eastern else g.scheduled_start_utc
+        rows.append({
+            "Pick ID": f"{g.season}-{g.week:02d}-{g.away_team}-{g.home_team}-{tag}", "Date": kickoff.strftime("%Y-%m-%d"),
+            "Week": g.week, "Sport": "NFL", "Away": g.away_team, "Home": g.home_team, "Bet Type": bet, "Pick": pick,
+            "Line": line, "Odds (American)": f"{odds:+g}", "AI Win Prob": f"{p_pick:.4f}", "Confidence": conf,
+            "Stake (units)": stake,
+            "AI Reasoning (summary)": (f"{DISCLAIMER} Market-residual family (market_logit uses the market line as an "
+                                       f"input): {what}={p_pick:.3f} vs implied {q:.3f} at {odds:+g}: edge {edge:+.3f}. "
+                                       "No pre-registered market bias survived validation (2006-2017), so edges are "
+                                       "expected to be noise."),
+            "Paper Only": "yes", "Issued At (UTC)": r["prediction_as_of_utc"], "Run ID": run["run_id"],
+            "Model": "market_logit", "Edge": f"{edge:.4f}", "Market Implied P (raw)": f"{q:.4f}",
+            "Game ID": g.game_id, "Pick Side": side, "Family": "market_residual",
+        })
+    return rows
+
+
+def write_market_picks(rows: list[dict], folder: Path, run_date: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"picks_market_{run_date}.csv"
+    new = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=COLUMNS + MARKET_EXTRA, lineterminator="\n")
+        if new:
+            w.writeheader()
+        w.writerows(rows)
+    return path
+
+
+def read_market_picks(folder: Path) -> list[dict]:
+    rows = []
+    for path in sorted(folder.glob("picks_market_*.csv")):
+        with open(path, newline="", encoding="utf-8") as fh:
+            rows.extend(csv.DictReader(fh))
+    return rows
+
+
+def grade_market(rows: list[dict], games: dict[str, Game], closing: dict[str, dict], n_boot: int = 2000,
+                 seed: int = 0) -> dict:
+    """Latest pre-kickoff spread/total paper pick per Pick ID, graded at its own line and price.
+    CLV in points: how far the closing line moved in the pick's favor."""
+    from sfi.evaluation.metrics import block_bootstrap_mean_ci
+
+    picks = latest_pre_kickoff(rows, games)
+    out = {}
+    for bet in ("Spread", "Total"):
+        staked, clv, pending = [], [], 0
+        for r in picks.values():
+            if r["Bet Type"] != bet:
+                continue
+            g = games[r["Game ID"]]
+            if not g.is_final:
+                pending += 1
+                continue
+            side, line = r["Pick Side"], float(r["Line"])
+            m, tot = g.home_score - g.away_score, g.home_score + g.away_score
+            if bet == "Spread":
+                val = m if side == "home" else -m      # pick-side margin vs handicap line
+                result = val + line                    # > 0 win, = 0 push
+                close = closing.get(g.game_id, {}).get("spread")
+                if close is not None:
+                    issue_s = -line if side == "home" else line
+                    clv.append(((close - issue_s) if side == "home" else (issue_s - close), f"{g.season}-{g.week}"))
+            else:
+                result = (tot - line) if side == "over" else (line - tot)
+                close = closing.get(g.game_id, {}).get("total")
+                if close is not None:
+                    clv.append(((close - line) if side == "over" else (line - close), f"{g.season}-{g.week}"))
+            stake = float(r["Stake (units)"])
+            if stake > 0:
+                profit = 0.0 if result == 0 else (american_profit(float(r["Odds (American)"]), stake) if result > 0 else -stake)
+                staked.append((profit / stake, f"{g.season}-{g.week}", profit, stake))
+        res = {"staked_bets": len(staked), "pending": pending}
+        if staked:
+            m_, lo, hi = block_bootstrap_mean_ci([x[0] for x in staked], [x[1] for x in staked], n_boot, seed=seed)
+            res.update(units_profit=round(sum(x[2] for x in staked), 3), units_staked=sum(x[3] for x in staked),
+                       roi_per_unit=m_, roi_ci95=[lo, hi])
+        if clv:
+            m_, lo, hi = block_bootstrap_mean_ci([x[0] for x in clv], [x[1] for x in clv], n_boot, seed=seed)
+            res.update(clv_points=m_, clv_ci95=[lo, hi], clv_n=len(clv))
+        out[bet] = res
+    return out

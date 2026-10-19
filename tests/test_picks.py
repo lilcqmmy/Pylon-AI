@@ -82,3 +82,33 @@ def test_tie_is_a_push_and_pending_games_are_counted():
     g2 = _game()
     gr2 = PK.grade(rows, {g2.game_id: g2}, {}, n_boot=50)
     assert gr2["pending"] == 1 and gr2["staked_bets"] == 0
+
+
+def _mrec(target, line, prices, p, gid="2026_07_NE_CHI", issued=T0 - timedelta(hours=3)):
+    return {"target": target, "line_at_issue": line, "prices_at_issue": prices, "p_model": p, "game_id": gid,
+            "prediction_as_of_utc": issued.strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
+def test_market_picks_sides_lines_and_grading():
+    g = _game()
+    run = {"run_id": "r"}
+    # spread: CHI (home) favored by 3.5; model P(home covers)=0.58 vs -110 -> home edge 0.056
+    rows = PK.make_market_picks(run=run, market_records=[_mrec("cover", 3.5, [-110, -110], 0.58),
+                                                         _mrec("over", 44.5, [-110, -110], 0.40),
+                                                         _mrec("win", None, [-170, 150], 0.6)],
+                                games={g.game_id: g})
+    by = {r["Bet Type"]: r for r in rows}
+    assert set(by) == {"Spread", "Total"}
+    sp, tot = by["Spread"], by["Total"]
+    assert sp["Pick"] == "CHI" and sp["Line"] == "-3.5" and sp["Stake (units)"] == 1 and sp["Confidence"] == "Medium"
+    assert sp["Pick ID"] == "2026-07-NE-CHI-ATS" and sp["Family"] == "market_residual"
+    assert tot["Pick"] == "Under" and tot["Pick Side"] == "under" and tot["Line"] == "44.5"
+    # CHI wins by 7 (covers -3.5), total 41 (under 44.5); close moves to CHI -4.5 and total 43.5 (both toward picks)
+    final = _game(hs=24, as_=17)
+    gr = PK.grade_market(rows, {final.game_id: final}, {final.game_id: {"spread": 4.5, "total": 43.5}}, n_boot=50)
+    assert gr["Spread"]["units_profit"] == pytest.approx(100 / 110, abs=1e-3)
+    assert gr["Spread"]["clv_points"] == pytest.approx(1.0) and gr["Total"]["clv_points"] == pytest.approx(1.0)
+    away = PK.make_market_picks(run=run, market_records=[_mrec("cover", 3.5, [-110, -110], 0.40)], games={g.game_id: g})
+    assert away[0]["Pick"] == "NE" and away[0]["Line"] == "+3.5"
+    lost = PK.grade_market(away, {final.game_id: final}, {}, n_boot=50)
+    assert lost["Spread"]["units_profit"] == pytest.approx(-1.0)  # NE +3.5 loses by 7
