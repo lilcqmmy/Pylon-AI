@@ -62,11 +62,45 @@ def load_tuned(cfg: dict, ds) -> tuple[EloParams, dict] | None:
     return EloParams(**tuned["best"]["params"]), tuned
 
 
-def challenger_factories(cfg: dict, tuned_params: EloParams) -> list:
-    """Pre-registered challengers (docs/challenger_elo_hfa.md)."""
+def challenger_factories(cfg: dict, tuned_params: EloParams, data: dict | None = None) -> list:
+    """Pre-registered challengers (docs/challenger_elo_hfa.md, docs/challenger_avail_qbadj.md).
+    `elo_avail` and `elo_qbadj` need `data` from `_challenger_inputs`."""
     from sfi.models.elo import EloAdaptiveHome
     k = cfg["live"]["elo_hfa_home_k"]
-    return [lambda: EloAdaptiveHome(tuned_params, home_k=k, name="elo_hfa")]
+    out = [lambda: EloAdaptiveHome(tuned_params, home_k=k, name="elo_hfa")]
+    if data is not None:
+        from sfi.models.avail import EloAvail
+        from sfi.models.qbadj import EloQbAdj
+        af, qa = cfg["features"]["avail"], cfg["features"]["qbadj"]
+        out += [
+            lambda: EloAvail(tuned_params, data["depth"], data["injuries"], l2=af["l2"], min_samples=af["min_samples"],
+                             name="elo_avail", data_tag=data["avail_tag"]),
+            lambda: EloQbAdj(tuned_params, data["qb_games"], data["starters"], data["injuries"], data["depth"],
+                             factor=qa["factor"], k_prior=qa["k_prior"], prior_mean=qa["prior_mean"],
+                             name="elo_qbadj", data_tag=data["qbadj_tag"]),
+        ]
+    return out
+
+
+def _challenger_inputs(cfg: dict, ds, games) -> dict:
+    """Depth charts, all-position injury rows, QB game stats and starters for elo_avail / elo_qbadj."""
+    from sfi.data.sources import nflverse, nflverse_pbp
+    from sfi.features.availability import load_depth_charts
+    from sfi.features.qb import load_injuries, load_qb_games, load_starters
+    nv = cfg["datasets"]["nflverse"]
+    seasons = sorted({g.season for g in games})
+    pbp_files = nflverse_pbp.latest_files(PROJECT_ROOT / nv["pbp_dir"], seasons)
+    dc_files = nflverse_pbp.latest_release_files(nflverse_pbp.DEPTH_CHARTS, PROJECT_ROOT / nv["depth_charts_dir"],
+                                                 [s for s in seasons if s >= 2001])
+    inj_files = nflverse_pbp.latest_release_files(nflverse_pbp.INJURIES, PROJECT_ROOT / nv["injuries_dir"],
+                                                  [s for s in seasons if s >= 2009])
+    inj = load_injuries(inj_files, games, missing_hours=cfg["features"]["qb"]["missing_timestamp_hours"], positions=None)
+    ids = {k: nflverse_pbp.combined_snapshot_id([m for _, m in f.values()])
+           for k, f in (("pbp", pbp_files), ("dc", dc_files), ("inj", inj_files))}
+    return {"depth": load_depth_charts(dc_files), "injuries": inj.rows,
+            "qb_games": load_qb_games(pbp_files, PROJECT_ROOT / "data" / "derived" / "pbp"),
+            "starters": load_starters(nflverse.latest_snapshot(PROJECT_ROOT / nv["raw_dir"]) / "games.csv", games),
+            "avail_tag": f"{ids['dc']}|{ids['inj']}", "qbadj_tag": f"{ids['pbp']}|{ids['dc']}|{ids['inj']}"}
 
 
 def elo_factories(cfg: dict, tuned_params: EloParams) -> list:
@@ -147,6 +181,7 @@ def cmd_fetch(cfg: dict, args) -> int:
             current = str(max(int(r["season"]) for r in _csv.DictReader(fh)))
         args.pbp = args.pbp or current
         args.injuries = args.injuries or current
+        args.depth_charts = args.depth_charts or current
     for spec, seasons_arg, dir_key in ((nflverse_pbp.PBP, args.pbp, "pbp_dir"),
                                        (nflverse_pbp.INJURIES, args.injuries, "injuries_dir"),
                                        (nflverse_pbp.DEPTH_CHARTS, args.depth_charts, "depth_charts_dir")):
@@ -703,6 +738,11 @@ def cmd_forecast(cfg: dict, args) -> int:
     ]
     from sfi.models.players import PlayerOppEff, PlayerParams
     try:
+        chal_data = _challenger_inputs(cfg, ds, ds.games)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"elo_avail / elo_qbadj unavailable ({e}); run `sfi fetch --live`.", file=sys.stderr)
+        chal_data = None
+    try:
         pstats, pinj, ptag = _player_inputs(cfg, ds, ds.games)
     except (FileNotFoundError, ValueError) as e:
         print(f"Player forecasts unavailable ({e}); run `sfi fetch --live`.", file=sys.stderr)
@@ -713,7 +753,8 @@ def cmd_forecast(cfg: dict, args) -> int:
         player_factory = lambda: PlayerOppEff(pstats, pinj.rows, pparams, data_tag=ptag)  # noqa: E731
     try:
         records, run = live.build_run(
-            games=ds.games, factories=[HomeRate, *elo_factories(cfg, tuned_params), *challenger_factories(cfg, tuned_params)],
+            games=ds.games, factories=[HomeRate, *elo_factories(cfg, tuned_params),
+                                       *challenger_factories(cfg, tuned_params, chal_data)],
             now=now, cfg=live_cfg,
             as_of_lead=timedelta(hours=f["as_of_lead_hours"]),
             gate=GateConfig(f["publish_gate"].get("min_prior_games_per_team") or 0),
@@ -746,9 +787,9 @@ def cmd_forecast(cfg: dict, args) -> int:
     lines = [f"Issued {run['issued_at_utc']} from snapshot {ds.snapshot_id} "
              f"(retrieved {manifest['retrieved_at_utc']}); code {commit[:7] if commit else '?'}"
              f"{' (uncommitted changes)' if dirty else ''}", "",
-             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) elo_hfa (challenger) | P(home) home_rate | Market (benchmark) "
+             f"| Kickoff (ET) | Game | P(home) {lv['primary_model']} | P(home) Platt | P(home) elo_hfa (ch.) | P(home) elo_avail (ch.) | P(home) elo_qbadj (ch.) | P(home) home_rate | Market (benchmark) "
              f"| Margin median [80%] | Total median [80%] | Market spread / total |",
-             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     mlines = run.get("market_lines_at_issue", {})
     for gid in run["game_ids"]:
         g, p = games[gid], by_game[gid]
@@ -756,7 +797,8 @@ def cmd_forecast(cfg: dict, args) -> int:
         site = " (neutral)" if g.neutral_site else ""
         lines.append(f"| {g.scheduled_start_utc.astimezone(eastern):%a %b %d %H:%M} | {g.away_team} @ {g.home_team}{site} | "
                      f"{p.get(lv['primary_model'], float('nan')):.3f} | {p.get('elo_tuned_platt', float('nan')):.3f} | "
-                     f"{p.get('elo_hfa', float('nan')):.3f} | "
+                     f"{p.get('elo_hfa', float('nan')):.3f} | {p.get('elo_avail', float('nan')):.3f} | "
+                     f"{p.get('elo_qbadj', float('nan')):.3f} | "
                      f"{p.get('home_rate', float('nan')):.3f} | {mk} | {_fmt_dist(dist.get(gid), 'margin')} | "
                      f"{_fmt_dist(dist.get(gid), 'total')} | {_fmt_lines(mlines.get(gid))} |")
     print("\n".join(lines))
@@ -810,6 +852,56 @@ def cmd_forecast(cfg: dict, args) -> int:
     return 0
 
 
+CHALLENGERS = {  # name: (registered interval level, decision games, subset description, subset predicate on inputs)
+    "elo_hfa": (0.95, 500, None, None),
+    "elo_avail": (1 - 0.05 / 3, 500, "either team 2+ expected starters Out/Doubtful",
+                  lambda i: max(i.get("home", {}).get("n_out", 0), i.get("away", {}).get("n_out", 0)) >= 2),
+    "elo_qbadj": (1 - 0.05 / 3, 500, "either team's expected QB differs from its previous starter",
+                  lambda i: any((i.get(s) or {}).get("expected") != (i.get(s) or {}).get("prev_starter")
+                                for s in ("home_qb", "away_qb") if i.get(s))),
+}
+
+
+def _challenger_decisions(ledger: list[dict], games: dict, cfg: dict) -> list[str]:
+    """Pre-registered challenger vs `elo_tuned` status (docs/challenger_*.md)."""
+    from sfi.evaluation import metrics as M
+    lines = ["## Challengers vs elo_tuned (pre-registered rules)", "",
+             "| Challenger | Scored games | Mean Brier diff | Registered interval | Status | Subset | Subset games | Subset diff (95%) |",
+             "|---|---:|---:|---|---|---|---:|---|"]
+    for name, (level, need, sub_desc, pred) in CHALLENGERS.items():
+        res = live.score_ledger([r for r in ledger if r["model_name"] in (name, "elo_tuned")], games)
+        a, b = res.sets.get(name), res.sets.get("elo_tuned")
+        if a is None or b is None or not a.p:
+            lines.append(f"| {name} | 0 | – | – | no scored games yet | {sub_desc or '–'} | – | – |")
+            continue
+        ib = {g: i for i, g in enumerate(b.game_ids)}
+        pairs = [(i, ib[g]) for i, g in enumerate(a.game_ids) if g in ib]
+        d = [(a.p[i] - a.y[i]) ** 2 - (b.p[j] - b.y[j]) ** 2 for i, j in pairs]
+        blocks = [a.block[i] for i, _ in pairs]
+        m, lo, hi = M.block_bootstrap_mean_ci(d, blocks, cfg["validation"]["bootstrap_samples"], alpha=1 - level)
+        n = len(pairs)
+        status = (f"waiting ({n}/{need})" if n < need else "eligible for promotion" if hi < 0
+                  else "retire" if lo > 0 else "keep running")
+        sub_txt = ("–", "–")
+        if pred is not None:
+            latest = {}
+            for r in ledger:
+                if r["model_name"] == name and r.get("outcome_type", "home_win_excl_tie") == "home_win_excl_tie":
+                    if r["game_id"] not in latest or r["prediction_as_of_utc"] > latest[r["game_id"]]["prediction_as_of_utc"]:
+                        latest[r["game_id"]] = r
+            sub = {g for g, r in latest.items() if pred(r.get("inputs", {}))}
+            sp = [(i, j) for i, j in pairs if a.game_ids[i] in sub]
+            if sp:
+                sd = [(a.p[i] - a.y[i]) ** 2 - (b.p[j] - b.y[j]) ** 2 for i, j in sp]
+                sm, slo, shi = M.block_bootstrap_mean_ci(sd, [a.block[i] for i, _ in sp], cfg["validation"]["bootstrap_samples"])
+                sub_txt = (str(len(sp)), f"{sm:+.4f} [{slo:+.4f}, {shi:+.4f}]")
+            else:
+                sub_txt = ("0", "–")
+        lines.append(f"| {name} | {n} | {m:+.4f} | {level:.1%}: [{lo:+.4f}, {hi:+.4f}] | {status} | {sub_desc or '–'} | "
+                     f"{sub_txt[0]} | {sub_txt[1]} |")
+    return lines + ["", "Decisions only at ≥ 500 scored games per challenger; until then intervals are informational.", ""]
+
+
 def cmd_score(cfg: dict, args) -> int:
     ds = _live_dataset(cfg)
     ledger = live.read_jsonl(PROJECT_ROOT / cfg["storage"]["prospective_ledger"])
@@ -828,7 +920,8 @@ def cmd_score(cfg: dict, args) -> int:
             f"awaiting results. Excluded records: {res.excluded}.")
     if n < 100:
         note += f" **Only {n} scored games: far too few to judge skill or calibration.**"
-    comparisons = [("elo_hfa", "elo_tuned"), ("elo_tuned", "home_rate"), ("elo_tuned_platt", "elo_tuned"),
+    comparisons = [("elo_hfa", "elo_tuned"), ("elo_avail", "elo_tuned"), ("elo_qbadj", "elo_tuned"),
+                   ("elo_tuned", "home_rate"), ("elo_tuned_platt", "elo_tuned"),
                    ("elo_tuned", "market_at_issue"), ("elo_tuned", "market_moneyline"), ("elo_hfa", "market_at_issue")]
     section = section_lines("Prospective forecasts", note, res.sets, summary, comparisons=comparisons,
                             reliability=["elo_tuned"] if n >= 100 else [],
@@ -887,6 +980,7 @@ def cmd_score(cfg: dict, args) -> int:
             player_sections.append(["## Player yardage", "", f"No scorable player forecasts yet "
                                     f"({pres.pending} game(s) pending).", ""])
         print(f"Players: {pres.pending} game(s) pending")
+    decision_section = _challenger_decisions(ledger, games, cfg)
     # Line movement: closing market vs market at issue (stored once per final game, append-only)
     moves = live.market_moves(ledger, runs, games, ds.benchmarks.get("market_moneyline", {}), ds.snapshot_id)
     mpath = PROJECT_ROOT / cfg["storage"]["market_moves"]
@@ -956,7 +1050,8 @@ def cmd_score(cfg: dict, args) -> int:
                            "`market_moneyline`: line in the scoring snapshot (likely closing). Market spread/total "
                            "lines are point benchmarks (`*_at_issue`: recorded with our forecast; `*_snapshot`: "
                            "scoring snapshot)."],
-                   sections=[section, *dist_sections, *player_sections, move_section + [""], picks_section + [""]])
+                   sections=[section, decision_section, *dist_sections, *player_sections, move_section + [""],
+                             picks_section + [""]])
     for name, s in summary.items():
         if s.get("n_scored"):
             print(f"  {name:18s} n={s['n_scored']:4d}  Brier={s['brier']:.4f}  LogLoss={s['log_loss']:.4f}")
@@ -986,7 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--injuries", metavar="SEASONS", help='also fetch injury reports (2009+)')
     p.add_argument("--depth-charts", metavar="SEASONS", help='also fetch depth charts (2001+)')
     p.add_argument("--live", action="store_true",
-                   help="also fetch the current season's play-by-play and injuries (for live player forecasts)")
+                   help="also fetch the current season's play-by-play, injuries and depth charts (live forecasts)")
     p = sub.add_parser("forecast", help="forecast upcoming games and archive them (real data)")
     p.add_argument("--dry-run", action="store_true", help="print forecasts without archiving")
     sub.add_parser("score", help="score archived prospective forecasts against the latest snapshot")

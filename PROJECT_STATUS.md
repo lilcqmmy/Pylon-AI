@@ -57,6 +57,14 @@ full write-up in `docs/holdout_results.md`. Out-of-sample results:
   it leans worse (+0.0012 [−0.0003, +0.0026]); 2001–2009 lacks injury reports.
 - Not promoted; to be judged prospectively under a pre-registered rule (item 5).
 
+## Live challengers (2026-10-19)
+- `elo_avail` and `elo_qbadj` pre-registered in `docs/challenger_avail_qbadj.md` (commit `cef522f`,
+  14:00 ET, before any prospective forecast): paired Brier vs `elo_tuned`, decision at ≥ 500 scored games,
+  98.3% (Bonferroni, 3 challengers) interval; `elo_hfa` keeps its 95% rule.
+- All three run in every live forecast; `sfi score` shows a "Challengers vs elo_tuned" table with the
+  registered interval, status (waiting / eligible / retire / keep running) and the pre-specified subsets.
+- `sfi fetch --live` now also refreshes the current season's depth charts (daily snapshots, ~3 MB).
+
 ## Earlier state (2026-10-15 to 2026-10-18)
 
 ### Built and verified
