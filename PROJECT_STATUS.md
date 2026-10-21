@@ -309,7 +309,7 @@ Synthetic holdout 2023–2024 (525 games): tuned Elo 0.2454 Brier, Platt 0.2449,
 - No live forecast has been scored yet (all 18 games pending).
 - No weather-forecast features; no joint (correlated) simulations across players or game outcomes.
 - No database, API, dashboard, agents/orchestrator, scheduling, model registry (Stages 3–4).
-- Local git repository only (branch `main`); no remote, no CI.
+- Git remote `origin` = https://github.com/lilcqmmy/Pylon-AI (public); `main` pushed 2026-10-21. `scripts/live_run.ps1` pushes after every ledger commit (failures logged, never fail the run). No CI.
 
 ### Open decisions (owner)
 - When to reveal the 2020–2025 holdout (only after the next model changes are frozen).
