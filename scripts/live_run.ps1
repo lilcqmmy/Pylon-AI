@@ -1,5 +1,5 @@
 # One prospective-forecast cycle: fetch (schedules + current-season play-by-play and injuries)
-# -> forecast -> score -> commit ledger.
+# -> forecast -> score -> commit ledger -> push to origin (a failed push is logged, never fails the run).
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live_run.ps1
 # Exit codes: 0 ok, 1 fetch failed, 2 forecast refused or failed (score still runs), 3 git commit failed.
 # Output is also appended to logs\live_runs.log (git-ignored).
@@ -42,6 +42,36 @@ if ($changed) {
 } else {
     Say "ledger unchanged; no commit"
 }
+
+# Back up the ledger: push main to origin (also pushes commits left over from earlier failed pushes).
+# Never fails the run: offline, auth or timeout problems are logged as warnings. Runs in a job so that
+# git's stderr progress output can't trip $ErrorActionPreference, prompts are disabled, and it can time out.
+$remote = git remote 2>$null | Where-Object { $_ -eq "origin" }
+if ($remote) {
+    Say "== push"
+    $job = Start-Job -ArgumentList $root -ScriptBlock {
+        param($r)
+        $ErrorActionPreference = "Continue"
+        Set-Location $r
+        $env:GIT_TERMINAL_PROMPT = "0"   # no username/password prompt
+        $env:GCM_INTERACTIVE = "never"   # no Git Credential Manager dialog
+        $o = git push origin main 2>&1 | ForEach-Object { "$_" }
+        [pscustomobject]@{ code = $LASTEXITCODE; out = $o }
+    }
+    if (Wait-Job $job -Timeout 120) {
+        $res = Receive-Job $job
+        foreach ($l in $res.out) { Say "   $l" }
+        if ($res.code -eq 0) { Say "pushed main to origin" }
+        else { Say "WARNING: git push failed (exit $($res.code)); ledger is committed locally and will be pushed next run" }
+    } else {
+        Stop-Job $job
+        Say "WARNING: git push timed out after 120 s; ledger is committed locally and will be pushed next run"
+    }
+    Remove-Job $job -Force
+} else {
+    Say "no 'origin' remote configured; skipping push"
+}
+
 if ($status -eq 2) { Say "RESULT: forecast refused or failed (see above)"; exit 2 }
 Say "RESULT: ok"
 exit 0
