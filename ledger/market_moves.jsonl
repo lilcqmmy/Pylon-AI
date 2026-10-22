@@ -2,3 +2,4 @@
 {"close_snapshot_id":"sha256:92e6f15ebf5611c9","game_id":"2026_06_BUF_LV","home_outcome":0.0,"issued_at_utc":"2026-10-18T19:40:09Z","market_move":-0.0,"model_p_home":0.343651,"p_home_at_issue":0.324969,"p_home_close":0.324969}
 {"close_snapshot_id":"sha256:92e6f15ebf5611c9","game_id":"2026_06_DAL_GB","home_outcome":1.0,"issued_at_utc":"2026-10-18T22:38:48Z","market_move":-0.006504,"model_p_home":0.649438,"p_home_at_issue":0.49567,"p_home_close":0.489166}
 {"close_snapshot_id":"sha256:92e6f15ebf5611c9","game_id":"2026_06_LAC_KC","home_outcome":1.0,"issued_at_utc":"2026-10-18T19:40:09Z","market_move":0.015239,"model_p_home":0.75658,"p_home_at_issue":0.771505,"p_home_close":0.786744}
+{"close_snapshot_id":"sha256:190a0ca26286510f","game_id":"2026_06_WAS_SF","home_outcome":1.0,"issued_at_utc":"2026-10-19T19:07:41Z","market_move":0.0,"model_p_home":0.818669,"p_home_at_issue":0.765902,"p_home_close":0.765902}
